@@ -13,8 +13,8 @@ try:
 except:
     st.error("⚠️ Cheia API lipsește! Seteaz-o în Streamlit Secrets.")
 
-# Folosim Gemini 1.5 Flash pentru că știe să citească imagini și texte lungi
-model = genai.GenerativeModel('gemini-1.5-flash')
+# Folosim Gemini 2.5 Flash pentru că știe să citească imagini și texte lungi
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- INTERFAȚA LATERALĂ (DATE PACIENT) ---
 with st.sidebar:
