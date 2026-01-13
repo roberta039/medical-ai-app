@@ -12,9 +12,9 @@ try:
 except:
     st.error("⚠️ Cheia API lipsește! Seteaz-o în Streamlit Secrets.")
 
-# Model Gemini 2.0 Flash (sau fallback la 1.5)
+# Model Gemini 2.5 Flash (sau fallback la 1.5)
 try:
-    model = genai.GenerativeModel('gemini-2.0-flash-exp')
+    model = genai.GenerativeModel('gemini-2.5-flash')
 except:
     model = genai.GenerativeModel('gemini-1.5-flash')
 
