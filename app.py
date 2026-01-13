@@ -2,10 +2,18 @@ import streamlit as st
 import google.generativeai as genai
 from PyPDF2 import PdfReader
 from PIL import Image
-import re # Am adăugat biblioteca pentru procesarea textului
+import re
 
-# --- CONFIGURARE ---
-st.set_page_config(page_title="MediChat Pro + Linkuri", page_icon="🩺", layout="wide")
+# --- CONFIGURARE PAGINĂ ---
+st.set_page_config(page_title="MediChat Pro", page_icon="🩺", layout="wide")
+
+# --- CSS PENTRU ASPECT PROFESIONAL ---
+st.markdown("""
+    <style>
+    .stChatMessage { font-family: 'Arial', sans-serif; }
+    .stButton button { width: 100%; border-radius: 5px; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # Configurare API Key
 try:
@@ -13,7 +21,7 @@ try:
 except:
     st.error("⚠️ Cheia API lipsește! Seteaz-o în Streamlit Secrets.")
 
-# --- SELECTARE MODEL (Versiunea Stabilă) ---
+# --- SELECTARE MODEL ---
 try:
     model = genai.GenerativeModel('gemini-2.5-flash')
     active_model_name = "Gemini 2.5 Flash"
@@ -21,25 +29,31 @@ except:
     model = genai.GenerativeModel('gemini-1.5-flash')
     active_model_name = "Gemini 1.5 Flash (Stabil)"
 
-# --- FUNCȚIE SPECIALĂ PENTRU LINK-URI ÎN TAB NOU ---
+# --- FUNCȚII UTILITARE ---
+
 def format_links_new_tab(text):
-    """
-    Caută link-urile Markdown [Text](URL) și le transformă în HTML
-    cu target="_blank" pentru a se deschide în pagină nouă.
-    """
-    # Pattern pentru link-uri Markdown: [Text](URL)
+    """Transformă link-urile Markdown în HTML cu target='_blank'"""
     pattern = r'\[([^\]]+)\]\(([^)]+)\)'
-    
-    # Funcție de înlocuire
     def replace_link(match):
         link_text = match.group(1)
         link_url = match.group(2)
-        # Returnăm HTML cu target="_blank"
         return f'<a href="{link_url}" target="_blank" style="color: #0068c9; text-decoration: none; font-weight: bold;">{link_text} 🔗</a>'
-    
-    # Înlocuim în text
-    new_text = re.sub(pattern, replace_link, text)
-    return new_text
+    return re.sub(pattern, replace_link, text)
+
+def reset_conversation():
+    """Șterge istoricul pentru a începe un pacient nou"""
+    st.session_state.messages = []
+    st.session_state.patient_context = ""
+    st.session_state.images_context = []
+    # Nu folosim st.rerun() direct aici pentru a evita bucle, Streamlit se va actualiza oricum
+
+def generate_download_text():
+    """Creează un text simplu din conversație pentru descărcare"""
+    text = "--- RAPORT MEDICHAT ---\n\n"
+    for msg in st.session_state.messages:
+        role = "MEDIC" if msg["role"] == "user" else "AI"
+        text += f"{role}: {msg['content']}\n\n"
+    return text
 
 # --- INITIALIZARE STATE ---
 if "messages" not in st.session_state:
@@ -49,18 +63,30 @@ if "patient_context" not in st.session_state:
 if "images_context" not in st.session_state:
     st.session_state.images_context = []
 
-# --- SIDEBAR ---
+# --- SIDEBAR (PANOU CONTROL) ---
 with st.sidebar:
     st.title("🩺 MediChat")
-    st.caption(f"Engine: {active_model_name}")
+    st.caption(f"Sistem: {active_model_name}")
     st.markdown("---")
     
+    # 1. ZONA DE RESET (NOU)
+    if st.button("🗑️ Pacient Nou / Resetare", type="primary"):
+        reset_conversation()
+        st.rerun()
+
+    st.markdown("---")
+    
+    # 2. ZONA DE DATE PACIENT
     use_patient_data = st.toggle("Mod: Caz Clinic Pacient", value=False)
     
     if use_patient_data:
-        st.info("Completează datele")
-        gender = st.selectbox("Sex", ["Masculin", "Feminin"])
-        age = st.number_input("Vârstă", value=30)
+        st.info("📊 Date Pacient")
+        col1, col2 = st.columns(2)
+        with col1:
+            gender = st.selectbox("Sex", ["M", "F"], label_visibility="collapsed")
+        with col2:
+            age = st.number_input("Ani", value=30, label_visibility="collapsed")
+        
         weight = st.number_input("Greutate (kg)", value=70.0)
         
         uploaded_files = st.file_uploader("Dosar (PDF/Foto)", type=['pdf', 'png', 'jpg'], accept_multiple_files=True)
@@ -80,42 +106,51 @@ with st.sidebar:
                     
                     st.session_state.patient_context = raw_text
                     st.session_state.images_context = images
-                    st.success("Date citite!")
+                    st.success("✅ Date încărcate!")
     else:
-        st.info("Mod: General")
-        st.caption("AI-ul va genera link-uri către ghiduri.")
+        st.info("Mod: General / Teoretic")
         st.session_state.patient_context = ""
         st.session_state.images_context = []
 
-# --- CHAT AREA ---
-st.subheader("Asistent Medical AI")
+    st.markdown("---")
+    
+    # 3. ZONA DE DESCĂRCARE (NOU)
+    if st.session_state.messages:
+        st.download_button(
+            label="💾 Descarcă Discuția (TXT)",
+            data=generate_download_text(),
+            file_name="consult_medical.txt",
+            mime="text/plain"
+        )
 
-# Afișare mesaje (Aici aplicăm și formatarea link-urilor pentru istoric)
+# --- CHAT AREA ---
+st.subheader("Discuție Medicală")
+
+# Afișare mesaje
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        # Dacă e mesaj de la asistent, îl procesăm pentru link-uri
         if message["role"] == "assistant":
             formatted_content = format_links_new_tab(message["content"])
             st.markdown(formatted_content, unsafe_allow_html=True)
         else:
             st.markdown(message["content"])
 
-if prompt := st.chat_input("Scrie întrebarea..."):
+# Input Utilizator
+if prompt := st.chat_input("Scrie întrebarea medicală..."):
     
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Caut informații și link-uri..."):
+        with st.spinner("Gândesc..."):
             try:
-                # PROMPT PENTRU FORMAT LINK-URI
+                # PROMPT PRINCIPAL
                 sources_request = """
-                CERINȚE OBLIGATORII PENTRU SURSE:
-                1. Include link-uri către ghiduri (ESC, AHA, MS.ro, etc).
-                2. FOARTE IMPORTANT: Formatează link-urile STRICT în format Markdown: [Nume Sursă](URL_COMPLET).
-                3. Exemplu corect: [Ghid ESC 2023](https://www.escardio.org/Guidelines)
-                4. Nu pune URL-ul simplu, pune-l mereu în paranteze ca mai sus.
+                CERINȚE FORMAT:
+                1. Include link-uri către ghiduri (ESC, AHA, MS.ro) unde e cazul.
+                2. FORMAT LINK OBLIGATORIU: [Nume Sursă](URL_COMPLET).
+                3. Exemplu: [Ghid ESC](https://www.escardio.org).
                 """
 
                 if use_patient_data:
@@ -126,7 +161,7 @@ if prompt := st.chat_input("Scrie întrebarea..."):
                     
                     {sources_request}
                     
-                    Răspunde aplicat pe caz.
+                    Răspunde specific pentru acest pacient.
                     """
                     content_parts = [system_prompt, prompt]
                     if st.session_state.images_context:
@@ -141,13 +176,10 @@ if prompt := st.chat_input("Scrie întrebarea..."):
                 # Generare
                 response = model.generate_content(content_parts)
                 
-                # Procesăm textul primit ca să transformăm link-urile în HTML cu New Tab
+                # Formatare și Afișare
                 final_html_text = format_links_new_tab(response.text)
-                
-                # Afișăm folosind HTML (unsafe_allow_html=True este necesar pentru target="_blank")
                 st.markdown(final_html_text, unsafe_allow_html=True)
                 
-                # Salvăm textul original (Markdown) în istoric, îl procesăm doar la afișare
                 st.session_state.messages.append({"role": "assistant", "content": response.text})
 
             except Exception as e:
