@@ -15,8 +15,8 @@ except:
 
 # --- SELECTARE MODEL (Versiunea Stabilă) ---
 try:
-    model = genai.GenerativeModel('gemini-2.0-flash-exp')
-    active_model_name = "Gemini 2.0 Flash (Exp)"
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    active_model_name = "Gemini 2.5 Flash"
 except:
     model = genai.GenerativeModel('gemini-1.5-flash')
     active_model_name = "Gemini 1.5 Flash (Stabil)"
