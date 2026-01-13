@@ -23,10 +23,10 @@ google_search_tool = [
 try:
     # Încercăm 2.0 cu Search
     model = genai.GenerativeModel(
-        'gemini-2.0-flash-exp',
+        'gemini-2.5-flash',
         tools=google_search_tool
     )
-    active_model = "Gemini 2.0 (Google Search)"
+    active_model = "Gemini 2.5 (Google Search)"
 except:
     try:
         # Încercăm 1.5 cu Search
