@@ -6,9 +6,9 @@ import re
 from duckduckgo_search import DDGS
 
 # --- CONFIGURARE PAGINĂ ---
-st.set_page_config(page_title="MediChat MD", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="MediChat Expert", page_icon="🩺", layout="wide")
 
-# CSS Custom pentru aspect curat
+# CSS Custom
 st.markdown("""
     <style>
     .stChatMessage { font-family: 'Arial', sans-serif; }
@@ -25,7 +25,7 @@ except:
 # --- SELECTARE MODEL ---
 try:
     model = genai.GenerativeModel('gemini-2.5-flash')
-    active_model_name = "Gemini 2.0 Flash"
+    active_model_name = "Gemini 2.5 Flash"
 except:
     model = genai.GenerativeModel('gemini-1.5-flash')
     active_model_name = "Gemini 1.5 Flash (Stabil)"
@@ -37,10 +37,11 @@ def search_web(query):
     try:
         results_text = ""
         with DDGS() as ddgs:
-            # Căutăm 4 rezultate relevante
-            results = list(ddgs.text(query, max_results=4))
+            # Căutăm 5 rezultate
+            results = list(ddgs.text(query, max_results=5))
             for res in results:
-                results_text += f"- {res['title']}: {res['body']} (Link: {res['href']})\n"
+                # Formatăm clar pentru AI
+                results_text += f"TITLU: {res['title']}\nLINK: {res['href']}\nREZUMAT: {res['body']}\n\n"
         return results_text
     except Exception as e:
         return ""
@@ -76,8 +77,8 @@ if "images_context" not in st.session_state:
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🩺 MediChat MD")
-    st.caption(f"Sistem: {active_model_name}")
+    st.title("🩺 MediChat Expert")
+    st.caption(f"Engine: {active_model_name}")
     
     if st.button("🗑️ Resetare Caz", type="primary"):
         reset_conversation()
@@ -85,7 +86,11 @@ with st.sidebar:
     
     st.markdown("---")
     
-    enable_web_search = st.toggle("🌍 Căutare Web Live", value=True)
+    enable_web_search = st.toggle("🌍 Adaugă Resurse Web", value=True)
+    if enable_web_search:
+        st.caption("Structură: Răspuns Expert AI (Bază) + Link-uri Web (Suplimentar)")
+    else:
+        st.caption("Strict baza de cunoștințe AI.")
     
     st.markdown("---")
     
@@ -124,7 +129,7 @@ with st.sidebar:
         st.download_button("💾 Export Discuție", generate_download_text(), "consult.txt")
 
 # --- CHAT ---
-st.subheader("Discuție Clinică (Peer-to-Peer)")
+st.subheader("Discuție Clinică")
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -140,50 +145,61 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        status_text = "Analizez..."
-        web_context = ""
         
+        web_data = ""
         if enable_web_search:
-            status_text = "Caut studii și ghiduri..."
-            with st.spinner(status_text):
-                search_results = search_web(prompt + " medical guidelines journal")
-                if search_results:
-                    web_context = f"\nINFO WEB RECENTE:\n{search_results}\n"
+            with st.spinner("Caut resurse suplimentare pe web..."):
+                web_raw = search_web(prompt + " medical guidelines")
+                if web_raw:
+                    web_data = f"""
+                    REZULTATE CĂUTARE WEB (Pentru secțiunea de resurse de la final):
+                    {web_raw}
+                    """
 
-        with st.spinner("Generez opinia clinică..."):
+        with st.spinner("Generez analiza clinică..."):
             try:
-                # --- DEFINIRE INSTRUCȚIUNI (Acum formatate sigur) ---
-                professional_instruction = """
-ROL: Ești un coleg medic expert (Consultant Senior). Discuți cu un alt medic.
+                # --- LOGICA NOUĂ: PRIORITATE AI, APOI WEB ---
+                system_prompt_core = """
+                Ești un medic Consultant Senior. Discuți cu un coleg medic (Peer-to-Peer).
+                
+                STRUCTURA OBLIGATORIE A RĂSPUNSULUI:
+                
+                PARTEA 1: OPINIA CLINICĂ (BAZATĂ PE EXPERTIZA TA INTERNĂ)
+                - Răspunde la întrebare folosind DOAR cunoștințele tale medicale profunde.
+                - Ignoră rezultatele de pe web în această parte pentru a menține calitatea și coerența maximă.
+                - Fii tehnic, precis, academic.
+                - FĂRĂ disclaimers pentru pacienți (utilizatorul e medic).
+                
+                PARTEA 2: RESURSE WEB (Dacă există date furnizate)
+                - Doar la final, adaugă o secțiune delimitată cu titlul "📚 Resurse Web Identificate".
+                - Aici analizezi rezultatele căutării furnizate mai jos.
+                - Listează link-urile utile găsite în format: [Titlu Sursă](URL).
+                - Dacă rezultatele web sunt irelevante, ignoră această secțiune.
+                """
 
-REGULI STRICTE DE RĂSPUNS:
-1. NU oferi sfaturi de genul "consultați un medic" sau "mergeți la spital". Utilizatorul ESTE medicul.
-2. Elimină orice disclaimer adresat pacienților.
-3. Folosește limbaj medical tehnic, precis și academic.
-4. Dacă folosești informații de pe web, citează sursa cu link formatat: [Sursa](URL).
-5. Fii concis și la obiect.
-"""
-
+                context_block = ""
                 if use_patient_data:
-                    system_prompt = f"""
-                    {professional_instruction}
+                    context_block = f"""
                     DATE PACIENT: Sex: {gender}, Vârstă: {age}, Greutate: {weight}kg.
-                    DOSAR: {st.session_state.patient_context}
-                    {web_context}
-                    SARCINĂ: Oferă o opinie clinică, diagnostic diferențial sau plan de tratament bazat pe datele de mai sus.
+                    DOSAR MEDICAL: {st.session_state.patient_context}
                     """
-                    content_parts = [system_prompt, prompt]
-                    if st.session_state.images_context:
-                        content_parts.extend(st.session_state.images_context)
-                else:
-                    system_prompt = f"""
-                    {professional_instruction}
-                    {web_context}
-                    SARCINĂ: Răspunde la întrebarea colegului medic bazat pe ghiduri și literatură.
-                    """
-                    content_parts = [system_prompt, prompt]
+
+                final_prompt = f"""
+                {system_prompt_core}
+                
+                {context_block}
+                
+                {web_data}
+                
+                ÎNTREBAREA MEDICULUI: {prompt}
+                """
+
+                content_parts = [final_prompt]
+                if st.session_state.images_context and use_patient_data:
+                    content_parts.append(st.session_state.images_context[0]) # Adaugă imagini dacă sunt
 
                 response = model.generate_content(content_parts)
+                
                 final_html = format_links_new_tab(response.text)
                 st.markdown(final_html, unsafe_allow_html=True)
                 st.session_state.messages.append({"role": "assistant", "content": response.text})
