@@ -2,10 +2,9 @@ import streamlit as st
 import google.generativeai as genai
 from PyPDF2 import PdfReader
 from PIL import Image
-from google.api_core import exceptions
 
 # --- CONFIGURARE ---
-st.set_page_config(page_title="MediChat Pro + Surse", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="MediChat Stabil", page_icon="🩺", layout="wide")
 
 # Configurare API Key
 try:
@@ -13,32 +12,16 @@ try:
 except:
     st.error("⚠️ Cheia API lipsește! Seteaz-o în Streamlit Secrets.")
 
-# --- DEFINIREA UNELTEI DE CĂUTARE ---
-# Aceasta este sintaxa corectă pentru versiunile noi
-google_search_tool = [
-    {"google_search": {}}
-]
-
-# Selectare Model
+# --- INITIALIZARE MODEL (FĂRĂ TOOLS CARE DAU EROARE) ---
+# Folosim modelul standard, fără configurații exotice care pot da 404
 try:
-    # Încercăm 2.0 cu Search
-    model = genai.GenerativeModel(
-        'gemini-2.5-flash',
-        tools=google_search_tool
-    )
-    active_model = "Gemini 2.5 (Google Search)"
+    # Încercăm întâi 2.5 (dacă e disponibil)
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    active_model_name = "Gemini 2.5 Flash"
 except:
-    try:
-        # Încercăm 1.5 cu Search
-        model = genai.GenerativeModel(
-            'gemini-1.5-flash',
-            tools=google_search_tool
-        )
-        active_model = "Gemini 1.5 (Google Search)"
-    except:
-        # Fallback fără search (dacă totuși dă eroare)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        active_model = "Gemini 1.5 (Fără Search - Mod Siguranță)"
+    # Dacă nu, fallback sigur la 1.5
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    active_model_name = "Gemini 1.5 Flash (Stabil)"
 
 # --- INITIALIZARE STATE ---
 if "messages" not in st.session_state:
@@ -51,21 +34,22 @@ if "images_context" not in st.session_state:
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🩺 MediChat")
-    st.caption(f"Status: {active_model}")
+    st.success(f"Sistem Online: {active_model_name}")
+    st.markdown("---")
     
-    use_patient_data = st.toggle("Activează Context Pacient", value=False)
+    use_patient_data = st.toggle("Mod: Caz Clinic Pacient", value=False)
     
     if use_patient_data:
-        st.info("Mod: Caz Clinic")
+        st.info("Completează datele")
         gender = st.selectbox("Sex", ["Masculin", "Feminin"])
         age = st.number_input("Vârstă", value=30)
         weight = st.number_input("Greutate (kg)", value=70.0)
         
-        uploaded_files = st.file_uploader("Dosar Medical", type=['pdf', 'png', 'jpg'], accept_multiple_files=True)
+        uploaded_files = st.file_uploader("Dosar (PDF/Foto)", type=['pdf', 'png', 'jpg'], accept_multiple_files=True)
         
-        if st.button("Procesează"):
+        if st.button("Procesează Dosarul"):
             if uploaded_files:
-                with st.spinner("Analiză..."):
+                with st.spinner("Se citește..."):
                     raw_text = ""
                     images = []
                     for file in uploaded_files:
@@ -78,58 +62,65 @@ with st.sidebar:
                     
                     st.session_state.patient_context = raw_text
                     st.session_state.images_context = images
-                    st.success("Date încărcate.")
+                    st.success("Date citite!")
     else:
-        st.info("Mod: Întrebări Generale")
-        st.caption("AI-ul va căuta surse pe internet pentru răspunsuri.")
+        st.info("Mod: General / Teoretic")
+        st.caption("Întreabă despre ghiduri, tratamente, protocoale.")
         st.session_state.patient_context = ""
         st.session_state.images_context = []
 
 # --- CHAT ---
-st.subheader("Discuție Medicală & Surse")
+st.subheader("Asistent Medical AI")
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if prompt := st.chat_input("Întrebare medicală..."):
+if prompt := st.chat_input("Scrie întrebarea..."):
+    
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Caut informații verificate..."):
+        with st.spinner("Analizez literatura medicală..."):
             try:
-                # Prompt specific pentru link-uri
-                sources_prompt = "Te rog să cauți pe Google și să oferi LINK-uri reale către sursele medicale (Ghiduri, Studii)."
-                
+                # INSTRUCȚIUNE PENTRU LINK-URI (Prompt Engineering)
+                # Îi cerem explicit să pună link-uri, fără să folosim tool-ul care dă eroare.
+                sources_request = """
+                CERINȚĂ SUPLIMENTARĂ IMPORTANTĂ:
+                Te rog să incluzi, unde este posibil, referințe către ghiduri (ESC, AHA, NICE) sau studii.
+                Dacă menționezi un ghid, încearcă să oferi URL-ul oficial sau numele exact al documentului.
+                """
+
                 if use_patient_data:
                     system_prompt = f"""
-                    Ești un asistent medical expert. {sources_prompt}
+                    Ești un consultant medical expert.
                     DATE PACIENT: Sex: {gender}, Vârstă: {age}, Greutate: {weight}kg.
                     CONTEXT DOSAR: {st.session_state.patient_context}
-                    Răspunde specific pentru acest pacient.
+                    
+                    {sources_request}
+                    
+                    Răspunde specific pentru acest caz.
                     """
                     content_parts = [system_prompt, prompt]
                     if st.session_state.images_context:
                         content_parts.extend(st.session_state.images_context)
                 else:
-                    system_prompt = f"Ești un asistent medical expert. {sources_prompt} Răspunde la întrebări generale."
+                    system_prompt = f"""
+                    Ești un consultant medical expert.
+                    Răspunde la întrebări generale bazate pe ghiduri clinice.
+                    
+                    {sources_request}
+                    """
                     content_parts = [system_prompt, prompt]
 
+                # Generare simplă (cea mai sigură metodă)
                 response = model.generate_content(content_parts)
-                st.markdown(response.text)
                 
-                # Afișare link-uri surse (dacă există în metadata)
-                try:
-                    if hasattr(response.candidates[0], 'grounding_metadata'):
-                        gm = response.candidates[0].grounding_metadata
-                        if hasattr(gm, 'search_entry_point') and gm.search_entry_point:
-                             st.markdown(f"🔍 *Sursă verificată:* {gm.search_entry_point.rendered_content}")
-                except:
-                    pass
-
+                st.markdown(response.text)
                 st.session_state.messages.append({"role": "assistant", "content": response.text})
 
             except Exception as e:
-                st.error(f"Eroare: {e}. Dacă eroarea persistă, debifează modul 'Surse' sau reîmprospătează pagina.")
+                # Dacă totuși apare o eroare ciudată, o afișăm prietenos
+                st.error(f"A apărut o eroare de conexiune cu Google AI. Reîncearcă în câteva secunde. Detalii: {e}")
