@@ -8,7 +8,7 @@ from duckduckgo_search import DDGS
 # --- CONFIGURARE PAGINĂ ---
 st.set_page_config(page_title="MediChat MD", page_icon="🩺", layout="wide")
 
-# CSS Custom
+# CSS Custom pentru aspect curat
 st.markdown("""
     <style>
     .stChatMessage { font-family: 'Arial', sans-serif; }
@@ -37,6 +37,7 @@ def search_web(query):
     try:
         results_text = ""
         with DDGS() as ddgs:
+            # Căutăm 4 rezultate relevante
             results = list(ddgs.text(query, max_results=4))
             for res in results:
                 results_text += f"- {res['title']}: {res['body']} (Link: {res['href']})\n"
@@ -151,12 +152,41 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
 
         with st.spinner("Generez opinia clinică..."):
             try:
-                # --- AICI ESTE SECRETUL PENTRU TONUL MEDICAL ---
+                # --- DEFINIRE INSTRUCȚIUNI (Acum formatate sigur) ---
                 professional_instruction = """
-                ROL: Ești un coleg medic expert (Consultant Senior). Discuți cu un alt medic.
-                
-                REGULI STRICTE DE RĂSPUNS:
-                1. NU oferi sfaturi de genul "consultați un medic" sau "mergeți la spital". Utilizatorul ESTE medicul.
-                2. Elimină orice disclaimer adresat pacienților.
-                3. Folosește limbaj medical tehnic, precis și academic.
-                4. Dacă 
+ROL: Ești un coleg medic expert (Consultant Senior). Discuți cu un alt medic.
+
+REGULI STRICTE DE RĂSPUNS:
+1. NU oferi sfaturi de genul "consultați un medic" sau "mergeți la spital". Utilizatorul ESTE medicul.
+2. Elimină orice disclaimer adresat pacienților.
+3. Folosește limbaj medical tehnic, precis și academic.
+4. Dacă folosești informații de pe web, citează sursa cu link formatat: [Sursa](URL).
+5. Fii concis și la obiect.
+"""
+
+                if use_patient_data:
+                    system_prompt = f"""
+                    {professional_instruction}
+                    DATE PACIENT: Sex: {gender}, Vârstă: {age}, Greutate: {weight}kg.
+                    DOSAR: {st.session_state.patient_context}
+                    {web_context}
+                    SARCINĂ: Oferă o opinie clinică, diagnostic diferențial sau plan de tratament bazat pe datele de mai sus.
+                    """
+                    content_parts = [system_prompt, prompt]
+                    if st.session_state.images_context:
+                        content_parts.extend(st.session_state.images_context)
+                else:
+                    system_prompt = f"""
+                    {professional_instruction}
+                    {web_context}
+                    SARCINĂ: Răspunde la întrebarea colegului medic bazat pe ghiduri și literatură.
+                    """
+                    content_parts = [system_prompt, prompt]
+
+                response = model.generate_content(content_parts)
+                final_html = format_links_new_tab(response.text)
+                st.markdown(final_html, unsafe_allow_html=True)
+                st.session_state.messages.append({"role": "assistant", "content": response.text})
+
+            except Exception as e:
+                st.error(f"Eroare: {e}")
