@@ -4,7 +4,7 @@ from PyPDF2 import PdfReader
 from PIL import Image
 
 # --- CONFIGURARE ---
-st.set_page_config(page_title="MediChat 2.0 Hybrid", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="MediChat Pro + Surse", page_icon="🩺", layout="wide")
 
 # Configurare API Key
 try:
@@ -12,11 +12,24 @@ try:
 except:
     st.error("⚠️ Cheia API lipsește! Seteaz-o în Streamlit Secrets.")
 
-# Model Gemini 2.5 Flash (sau fallback la 1.5)
+# --- CONFIGURARE MODEL CU GOOGLE SEARCH ---
+# Activăm unelta de căutare pentru a primi link-uri reale
+tools_configuration = [
+    {"google_search": {}}
+]
+
 try:
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    # Încercăm modelul experimental 2.0 cu Search activat
+    model = genai.GenerativeModel(
+        'gemini-2.0-flash-exp', 
+        tools=tools_configuration
+    )
 except:
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # Fallback la 1.5 Flash cu Search activat
+    model = genai.GenerativeModel(
+        'gemini-1.5-flash',
+        tools=tools_configuration
+    )
 
 # --- INITIALIZARE STATE ---
 if "messages" not in st.session_state:
@@ -31,7 +44,6 @@ with st.sidebar:
     st.title("⚙️ Setări Consult")
     
     # COMUTATOR PRINCIPAL
-    # Dacă e OFF, ignorăm datele. Dacă e ON, le folosim.
     use_patient_data = st.toggle("Activează Context Pacient", value=False)
     
     if use_patient_data:
@@ -66,18 +78,17 @@ with st.sidebar:
                 st.warning("Nu ai selectat fișiere.")
     else:
         st.info("🔵 Mod: Întrebări Generale")
-        st.caption("Pune întrebări teoretice, despre ghiduri sau medicamente, fără a implica un pacient anume.")
-        # Resetăm contextul dacă trecem pe general
+        st.caption("Pune întrebări teoretice. AI-ul va căuta surse pe internet.")
         st.session_state.patient_context = ""
         st.session_state.images_context = []
 
 # --- ZONA DE CHAT ---
-st.title("⚡ MediChat 2.0")
+st.title("⚡ MediChat 2.0 + Surse")
 
 if not use_patient_data:
-    st.caption("💡 Ești în modul **General**. Întreabă orice despre medicină.")
+    st.caption("💡 Mod **General**. Voi căuta link-uri relevante pentru răspunsuri.")
 else:
-    st.caption(f"💡 Ești în modul **Pacient** ({gender}, {age} ani, {weight}kg).")
+    st.caption(f"💡 Mod **Pacient** ({gender}, {age} ani). Analizez cazul specific.")
 
 # Afișare mesaje
 for message in st.session_state.messages:
@@ -85,32 +96,39 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # Input utilizator
-if prompt := st.chat_input("Scrie întrebarea..."):
+if prompt := st.chat_input("Scrie întrebarea (ex: Protocol tratament HTA ghid ESC)"):
     
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Analizez..."):
+        with st.spinner("Caut în literatura medicală (Google)..."):
             try:
-                # CONSTRUIREA PROMPTULUI DINAMIC
+                # --- PROMPT DESIGN PENTRU SURSE ---
+                sources_instruction = """
+                IMPORTANT:
+                1. Folosește Google Search pentru a verifica informația.
+                2. La finalul răspunsului, include o secțiune "📚 Bibliografie & Link-uri".
+                3. Oferă LINK-uri (URL) directe și funcționale către ghiduri (ESC, AHA, NICE), articole PubMed sau site-uri oficiale.
+                4. Nu inventa link-uri.
+                """
+
                 if use_patient_data:
                     # Modul PACIENT SPECIFIC
                     system_prompt = f"""
-                    Ești un asistent medical expert (Gemini 2.0).
-                    Răspunzi unui medic despre un caz specific.
+                    Ești un asistent medical expert.
+                    {sources_instruction}
                     
                     DATE PACIENT:
                     - Sex: {gender}
                     - Vârstă: {age} ani
                     - Greutate: {weight} kg
                     
-                    CONTEXT DIN DOSAR (dacă există):
+                    CONTEXT DIN DOSAR:
                     {st.session_state.patient_context}
                     
-                    SARCINĂ:
-                    Răspunde la întrebare ținând cont strict de datele pacientului de mai sus (ex: doze ajustate la greutate/vârstă, contraindicații la sex).
+                    Răspunde aplicat pe caz, citând sursele care justifică decizia.
                     """
                     content_parts = [system_prompt, prompt]
                     if st.session_state.images_context:
@@ -118,20 +136,25 @@ if prompt := st.chat_input("Scrie întrebarea..."):
                         
                 else:
                     # Modul GENERAL
-                    system_prompt = """
-                    Ești un asistent medical expert (Gemini 2.0).
-                    Răspunzi unui medic la întrebări generale.
+                    system_prompt = f"""
+                    Ești un asistent medical expert.
+                    {sources_instruction}
                     
-                    SARCINĂ:
-                    Oferă informații bazate pe ghiduri clinice, studii și farmacologie.
-                    NU inventa date despre pacienți. Răspunde teoretic și la obiect.
+                    Răspunde teoretic, bazat pe dovezi (Evidence Based Medicine).
                     """
                     content_parts = [system_prompt, prompt]
 
                 # Generare
                 response = model.generate_content(content_parts)
                 
+                # Afișare răspuns
                 st.markdown(response.text)
+                
+                # Afișare metadate despre căutarea Google (dacă există)
+                # Uneori API-ul returnează sursele separat în metadata, le afișăm sub răspuns
+                if response.candidates[0].grounding_metadata.search_entry_point:
+                     st.caption("🔍 Sursă verificată prin Google Search Grounding")
+
                 st.session_state.messages.append({"role": "assistant", "content": response.text})
 
             except Exception as e:
