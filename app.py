@@ -33,21 +33,31 @@ except:
 # --- FUNCȚII UTILITARE ---
 
 def search_web(query):
-    """Caută pe DuckDuckGo"""
+    """
+    Caută pe DuckDuckGo. 
+    Îmbunătățire: Folosește doar primele 15 cuvinte din întrebare pentru a nu confuza motorul de căutare.
+    """
     try:
+        # Simplificăm query-ul (luăm doar primele cuvinte relevante)
+        search_query = " ".join(query.split()[:15]) + " medical guidelines"
+        
         results_text = ""
-        with DDGS() as ddgs:
-            # Căutăm 5 rezultate
-            results = list(ddgs.text(query, max_results=5))
-            for res in results:
-                # Formatăm clar pentru AI
-                results_text += f"TITLU: {res['title']}\nLINK: {res['href']}\nREZUMAT: {res['body']}\n\n"
+        ddgs = DDGS()
+        # Căutăm 4 rezultate
+        results = list(ddgs.text(search_query, max_results=4))
+        
+        if not results:
+            return None
+
+        for res in results:
+            results_text += f"TITLU: {res['title']}\nLINK: {res['href']}\nREZUMAT: {res['body']}\n\n"
+        
         return results_text
     except Exception as e:
-        return ""
+        print(f"Eroare search: {e}") # Doar pentru log-uri interne
+        return None
 
 def format_links_new_tab(text):
-    """Link-uri Markdown -> HTML New Tab"""
     pattern = r'\[([^\]]+)\]\(([^)]+)\)'
     def replace_link(match):
         link_text = match.group(1)
@@ -88,9 +98,7 @@ with st.sidebar:
     
     enable_web_search = st.toggle("🌍 Adaugă Resurse Web", value=True)
     if enable_web_search:
-        st.caption("Structură: Răspuns Expert AI (Bază) + Link-uri Web (Suplimentar)")
-    else:
-        st.caption("Strict baza de cunoștințe AI.")
+        st.caption("Încearcă să caute studii recente.")
     
     st.markdown("---")
     
@@ -147,34 +155,39 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
     with st.chat_message("assistant"):
         
         web_data = ""
+        search_status = "" # Feedback vizual pentru tine
+        
         if enable_web_search:
-            with st.spinner("Caut resurse suplimentare pe web..."):
-                web_raw = search_web(prompt + " medical guidelines")
+            with st.spinner("Caut resurse suplimentare..."):
+                web_raw = search_web(prompt)
                 if web_raw:
                     web_data = f"""
-                    REZULTATE CĂUTARE WEB (Pentru secțiunea de resurse de la final):
+                    DATE DE PE WEB GĂSITE (Folosește-le în Secțiunea 2):
                     {web_raw}
                     """
+                    search_status = "✅ Resurse web găsite."
+                else:
+                    search_status = "⚠️ Căutarea web nu a returnat date relevante (Voi folosi doar expertiza internă)."
+
+        # Afișăm discret statusul căutării (ca să știi de ce nu apar link-uri)
+        if enable_web_search:
+            st.caption(search_status)
 
         with st.spinner("Generez analiza clinică..."):
             try:
-                # --- LOGICA NOUĂ: PRIORITATE AI, APOI WEB ---
                 system_prompt_core = """
-                Ești un medic Consultant Senior. Discuți cu un coleg medic (Peer-to-Peer).
+                Ești un medic Consultant Senior.
                 
-                STRUCTURA OBLIGATORIE A RĂSPUNSULUI:
+                STRUCTURA RĂSPUNSULUI:
                 
-                PARTEA 1: OPINIA CLINICĂ (BAZATĂ PE EXPERTIZA TA INTERNĂ)
-                - Răspunde la întrebare folosind DOAR cunoștințele tale medicale profunde.
-                - Ignoră rezultatele de pe web în această parte pentru a menține calitatea și coerența maximă.
-                - Fii tehnic, precis, academic.
-                - FĂRĂ disclaimers pentru pacienți (utilizatorul e medic).
+                PARTEA 1: OPINIA CLINICĂ
+                - Răspunde complet folosind expertiza ta medicală.
+                - Fii tehnic și direct.
                 
-                PARTEA 2: RESURSE WEB (Dacă există date furnizate)
-                - Doar la final, adaugă o secțiune delimitată cu titlul "📚 Resurse Web Identificate".
-                - Aici analizezi rezultatele căutării furnizate mai jos.
-                - Listează link-urile utile găsite în format: [Titlu Sursă](URL).
-                - Dacă rezultatele web sunt irelevante, ignoră această secțiune.
+                PARTEA 2: RESURSE WEB (OPȚIONAL)
+                - Dacă ai primit "DATE DE PE WEB GĂSITE" în prompt, listează link-urile utile aici.
+                - Format: [Titlu Sursă](URL).
+                - IMPORTANT: Dacă NU ai primit date web, NU scrie nimic despre asta. Pur și simplu termină răspunsul după Partea 1. Nu te scuza.
                 """
 
                 context_block = ""
@@ -196,7 +209,7 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
 
                 content_parts = [final_prompt]
                 if st.session_state.images_context and use_patient_data:
-                    content_parts.append(st.session_state.images_context[0]) # Adaugă imagini dacă sunt
+                    content_parts.append(st.session_state.images_context[0])
 
                 response = model.generate_content(content_parts)
                 
