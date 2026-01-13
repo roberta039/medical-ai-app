@@ -5,7 +5,7 @@ from PIL import Image
 import re
 
 # --- CONFIGURARE PAGINĂ ---
-st.set_page_config(page_title="MediChat Pro", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="MediChat Stabil", page_icon="🩺", layout="wide")
 
 # CSS Custom
 st.markdown("""
@@ -21,40 +21,30 @@ try:
 except:
     st.error("⚠️ Cheia API lipsește! Seteaz-o în Streamlit Secrets.")
 
-# --- INITIALIZARE MODEL INTELIGENTĂ ---
-# Definim unealta de căutare Google Nativă
-google_search_tool = [{"google_search": {}}]
-
-active_model_name = ""
-has_search_capability = False
-
+# --- SELECTARE MODEL (FĂRĂ TOOLS) ---
+# Aceasta este configurația cea mai sigură care nu dă 404.
 try:
-    # 1. Încercăm varianta IDEALĂ: Gemini 2.5 + Google Search
-    model = genai.GenerativeModel('gemini-2.5-flash', tools=google_search_tool)
-    active_model_name = "Gemini 2.5 (Google Search Activat)"
-    has_search_capability = True
-except Exception as e:
-    try:
-        # 2. Dacă 2.0 nu merge, încercăm 1.5 + Google Search
-        # (Unele conturi au acces, altele nu - testăm)
-        model = genai.GenerativeModel('gemini-1.5-flash', tools=google_search_tool)
-        active_model_name = "Gemini 1.5 (Google Search Activat)"
-        has_search_capability = True
-    except:
-        # 3. FALLBACK SIGUR: Gemini 1.5 (Memorie Internă)
-        # Aici ajungem dacă Google Search e blocat pe cont. Măcar AI-ul merge perfect.
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        active_model_name = "Gemini 1.5 (Expertiză Internă)"
-        has_search_capability = False
+    # Încercăm modelul experimental (mai deștept)
+    model = genai.GenerativeModel('gemini-2.0-flash-exp')
+    active_model_name = "Gemini 2.0 Flash (Exp)"
+except:
+    # Fallback la modelul stabil
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    active_model_name = "Gemini 1.5 Flash (Stabil)"
 
 # --- FUNCȚII UTILITARE ---
 
 def format_links_new_tab(text):
-    """Link-uri Markdown -> HTML New Tab"""
+    """
+    Transformă link-urile Markdown [Text](URL) în HTML care se deschide în tab nou.
+    """
     pattern = r'\[([^\]]+)\]\(([^)]+)\)'
     def replace_link(match):
         link_text = match.group(1)
         link_url = match.group(2)
+        # Verificăm sumar dacă pare un URL valid
+        if "http" not in link_url:
+            return link_text 
         return f'<a href="{link_url}" target="_blank" style="color: #0068c9; text-decoration: none; font-weight: bold;">{link_text} 🔗</a>'
     return re.sub(pattern, replace_link, text)
 
@@ -81,13 +71,8 @@ if "images_context" not in st.session_state:
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🩺 MediChat Pro")
+    st.caption(f"Sistem: {active_model_name}")
     
-    # Indicator Status
-    if has_search_capability:
-        st.success(f"✅ {active_model_name}")
-    else:
-        st.info(f"🧠 {active_model_name}")
-        
     if st.button("🗑️ Resetare Caz", type="primary"):
         reset_conversation()
         st.rerun()
@@ -134,7 +119,6 @@ st.subheader("Discuție Clinică")
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         if message["role"] == "assistant":
-            # Afișăm și sursele Google dacă există (Grounding)
             st.markdown(format_links_new_tab(message["content"]), unsafe_allow_html=True)
         else:
             st.markdown(message["content"])
@@ -146,25 +130,21 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Analiză în curs..."):
+        with st.spinner("Analiză clinică..."):
             try:
-                # --- PROMPT DESIGN ---
-                # Dacă avem search activat, îi spunem să îl folosească
-                search_instruction = ""
-                if has_search_capability:
-                    search_instruction = """
-                    FOLOSEȘTE GOOGLE SEARCH: Verifică ghidurile actuale.
-                    Dacă găsești surse relevante, include link-urile la final.
-                    """
-
-                system_prompt = f"""
-                Ești un medic Consultant Senior (Peer-to-Peer).
+                # --- PROMPT STRICT PENTRU LINK-URI DIN MEMORIE ---
+                system_prompt = """
+                ROL: Ești un medic Consultant Senior (Peer-to-Peer).
                 
                 REGULI:
                 1. Răspunde colegial, tehnic și la obiect.
-                2. FĂRĂ sfaturi pentru pacienți ("consultați medicul"). Utilizatorul este medic.
-                3. Bazează-te pe expertiza ta internă + Search (dacă e disponibil).
-                {search_instruction}
+                2. FĂRĂ sfaturi pentru pacienți. Utilizatorul este medic.
+                
+                CERINȚĂ SPECIALĂ PENTRU SURSE:
+                - Deoarece ești expert, cunoști marile ghiduri (ESC, AHA, ADA, NICE, MS.ro).
+                - Când faci o recomandare, citează ghidul și oferă link-ul oficial dacă îl știi.
+                - FORMAT OBLIGATORIU LINK: [Nume Sursă](URL_COMPLET).
+                - Exemplu: [Ghid ESC 2023](https://www.escardio.org/...)
                 """
 
                 context_block = ""
@@ -180,33 +160,13 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
                 if st.session_state.images_context and use_patient_data:
                     content_parts.append(st.session_state.images_context[0])
 
-                # Generare (Gestionăm eroarea de 404 aici, local)
-                try:
-                    response = model.generate_content(content_parts)
-                    
-                    # Afișare răspuns
-                    final_html = format_links_new_tab(response.text)
-                    st.markdown(final_html, unsafe_allow_html=True)
-                    
-                    # Afișare surse Google Grounding (Metadate oficiale)
-                    if hasattr(response.candidates[0], 'grounding_metadata'):
-                        gm = response.candidates[0].grounding_metadata
-                        if hasattr(gm, 'search_entry_point') and gm.search_entry_point:
-                             st.caption(f"🔍 Sursă Verificată Google: {gm.search_entry_point.rendered_content}")
-
-                    st.session_state.messages.append({"role": "assistant", "content": response.text})
-
-                except Exception as e_gen:
-                    # Dacă modelul cu Search dă fail (404 sau altceva) în timpul generării,
-                    # facem fallback instant la modelul simplu (1.5) fără să știe utilizatorul.
-                    fallback_model = genai.GenerativeModel('gemini-1.5-flash')
-                    response = fallback_model.generate_content(content_parts)
-                    
-                    final_html = format_links_new_tab(response.text)
-                    st.markdown(final_html, unsafe_allow_html=True)
-                    st.caption("ℹ️ Răspuns generat din expertiză internă (Search indisponibil momentan).")
-                    
-                    st.session_state.messages.append({"role": "assistant", "content": response.text})
+                # Generare SIMPLĂ (Fără tools, deci fără erori 404)
+                response = model.generate_content(content_parts)
+                
+                final_html = format_links_new_tab(response.text)
+                st.markdown(final_html, unsafe_allow_html=True)
+                st.session_state.messages.append({"role": "assistant", "content": response.text})
 
             except Exception as e:
-                st.error(f"Eroare sistem: {e}")
+                # Acum eroarea ar trebui să fie imposibilă, dar o prindem just in case
+                st.error(f"Eroare neașteptată: {e}. Încearcă să reîncarci pagina.")
