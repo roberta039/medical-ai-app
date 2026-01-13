@@ -3,10 +3,9 @@ import google.generativeai as genai
 from PyPDF2 import PdfReader
 from PIL import Image
 import re
-from duckduckgo_search import DDGS
 
 # --- CONFIGURARE PAGINĂ ---
-st.set_page_config(page_title="MediChat Expert", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="MediChat Pro", page_icon="🩺", layout="wide")
 
 # CSS Custom
 st.markdown("""
@@ -22,42 +21,36 @@ try:
 except:
     st.error("⚠️ Cheia API lipsește! Seteaz-o în Streamlit Secrets.")
 
-# --- SELECTARE MODEL ---
+# --- INITIALIZARE MODEL INTELIGENTĂ ---
+# Definim unealta de căutare Google Nativă
+google_search_tool = [{"google_search": {}}]
+
+active_model_name = ""
+has_search_capability = False
+
 try:
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    active_model_name = "Gemini 2.5 Flash"
-except:
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    active_model_name = "Gemini 1.5 Flash (Stabil)"
+    # 1. Încercăm varianta IDEALĂ: Gemini 2.5 + Google Search
+    model = genai.GenerativeModel('gemini-2.5-flash', tools=google_search_tool)
+    active_model_name = "Gemini 2.5 (Google Search Activat)"
+    has_search_capability = True
+except Exception as e:
+    try:
+        # 2. Dacă 2.0 nu merge, încercăm 1.5 + Google Search
+        # (Unele conturi au acces, altele nu - testăm)
+        model = genai.GenerativeModel('gemini-1.5-flash', tools=google_search_tool)
+        active_model_name = "Gemini 1.5 (Google Search Activat)"
+        has_search_capability = True
+    except:
+        # 3. FALLBACK SIGUR: Gemini 1.5 (Memorie Internă)
+        # Aici ajungem dacă Google Search e blocat pe cont. Măcar AI-ul merge perfect.
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        active_model_name = "Gemini 1.5 (Expertiză Internă)"
+        has_search_capability = False
 
 # --- FUNCȚII UTILITARE ---
 
-def search_web(query):
-    """
-    Caută pe DuckDuckGo. 
-    Îmbunătățire: Folosește doar primele 15 cuvinte din întrebare pentru a nu confuza motorul de căutare.
-    """
-    try:
-        # Simplificăm query-ul (luăm doar primele cuvinte relevante)
-        search_query = " ".join(query.split()[:15]) + " medical guidelines"
-        
-        results_text = ""
-        ddgs = DDGS()
-        # Căutăm 4 rezultate
-        results = list(ddgs.text(search_query, max_results=4))
-        
-        if not results:
-            return None
-
-        for res in results:
-            results_text += f"TITLU: {res['title']}\nLINK: {res['href']}\nREZUMAT: {res['body']}\n\n"
-        
-        return results_text
-    except Exception as e:
-        print(f"Eroare search: {e}") # Doar pentru log-uri interne
-        return None
-
 def format_links_new_tab(text):
+    """Link-uri Markdown -> HTML New Tab"""
     pattern = r'\[([^\]]+)\]\(([^)]+)\)'
     def replace_link(match):
         link_text = match.group(1)
@@ -87,18 +80,17 @@ if "images_context" not in st.session_state:
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🩺 MediChat Expert")
-    st.caption(f"Engine: {active_model_name}")
+    st.title("🩺 MediChat Pro")
     
+    # Indicator Status
+    if has_search_capability:
+        st.success(f"✅ {active_model_name}")
+    else:
+        st.info(f"🧠 {active_model_name}")
+        
     if st.button("🗑️ Resetare Caz", type="primary"):
         reset_conversation()
         st.rerun()
-    
-    st.markdown("---")
-    
-    enable_web_search = st.toggle("🌍 Adaugă Resurse Web", value=True)
-    if enable_web_search:
-        st.caption("Încearcă să caute studii recente.")
     
     st.markdown("---")
     
@@ -142,6 +134,7 @@ st.subheader("Discuție Clinică")
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         if message["role"] == "assistant":
+            # Afișăm și sursele Google dacă există (Grounding)
             st.markdown(format_links_new_tab(message["content"]), unsafe_allow_html=True)
         else:
             st.markdown(message["content"])
@@ -153,69 +146,67 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        
-        web_data = ""
-        search_status = "" # Feedback vizual pentru tine
-        
-        if enable_web_search:
-            with st.spinner("Caut resurse suplimentare..."):
-                web_raw = search_web(prompt)
-                if web_raw:
-                    web_data = f"""
-                    DATE DE PE WEB GĂSITE (Folosește-le în Secțiunea 2):
-                    {web_raw}
-                    """
-                    search_status = "✅ Resurse web găsite."
-                else:
-                    search_status = "⚠️ Căutarea web nu a returnat date relevante (Voi folosi doar expertiza internă)."
-
-        # Afișăm discret statusul căutării (ca să știi de ce nu apar link-uri)
-        if enable_web_search:
-            st.caption(search_status)
-
-        with st.spinner("Generez analiza clinică..."):
+        with st.spinner("Analiză în curs..."):
             try:
-                system_prompt_core = """
-                Ești un medic Consultant Senior.
+                # --- PROMPT DESIGN ---
+                # Dacă avem search activat, îi spunem să îl folosească
+                search_instruction = ""
+                if has_search_capability:
+                    search_instruction = """
+                    FOLOSEȘTE GOOGLE SEARCH: Verifică ghidurile actuale.
+                    Dacă găsești surse relevante, include link-urile la final.
+                    """
+
+                system_prompt = f"""
+                Ești un medic Consultant Senior (Peer-to-Peer).
                 
-                STRUCTURA RĂSPUNSULUI:
-                
-                PARTEA 1: OPINIA CLINICĂ
-                - Răspunde complet folosind expertiza ta medicală.
-                - Fii tehnic și direct.
-                
-                PARTEA 2: RESURSE WEB (OPȚIONAL)
-                - Dacă ai primit "DATE DE PE WEB GĂSITE" în prompt, listează link-urile utile aici.
-                - Format: [Titlu Sursă](URL).
-                - IMPORTANT: Dacă NU ai primit date web, NU scrie nimic despre asta. Pur și simplu termină răspunsul după Partea 1. Nu te scuza.
+                REGULI:
+                1. Răspunde colegial, tehnic și la obiect.
+                2. FĂRĂ sfaturi pentru pacienți ("consultați medicul"). Utilizatorul este medic.
+                3. Bazează-te pe expertiza ta internă + Search (dacă e disponibil).
+                {search_instruction}
                 """
 
                 context_block = ""
                 if use_patient_data:
                     context_block = f"""
                     DATE PACIENT: Sex: {gender}, Vârstă: {age}, Greutate: {weight}kg.
-                    DOSAR MEDICAL: {st.session_state.patient_context}
+                    DOSAR: {st.session_state.patient_context}
                     """
 
-                final_prompt = f"""
-                {system_prompt_core}
-                
-                {context_block}
-                
-                {web_data}
-                
-                ÎNTREBAREA MEDICULUI: {prompt}
-                """
+                final_prompt = f"{system_prompt}\n{context_block}\nÎNTREBARE: {prompt}"
 
                 content_parts = [final_prompt]
                 if st.session_state.images_context and use_patient_data:
                     content_parts.append(st.session_state.images_context[0])
 
-                response = model.generate_content(content_parts)
-                
-                final_html = format_links_new_tab(response.text)
-                st.markdown(final_html, unsafe_allow_html=True)
-                st.session_state.messages.append({"role": "assistant", "content": response.text})
+                # Generare (Gestionăm eroarea de 404 aici, local)
+                try:
+                    response = model.generate_content(content_parts)
+                    
+                    # Afișare răspuns
+                    final_html = format_links_new_tab(response.text)
+                    st.markdown(final_html, unsafe_allow_html=True)
+                    
+                    # Afișare surse Google Grounding (Metadate oficiale)
+                    if hasattr(response.candidates[0], 'grounding_metadata'):
+                        gm = response.candidates[0].grounding_metadata
+                        if hasattr(gm, 'search_entry_point') and gm.search_entry_point:
+                             st.caption(f"🔍 Sursă Verificată Google: {gm.search_entry_point.rendered_content}")
+
+                    st.session_state.messages.append({"role": "assistant", "content": response.text})
+
+                except Exception as e_gen:
+                    # Dacă modelul cu Search dă fail (404 sau altceva) în timpul generării,
+                    # facem fallback instant la modelul simplu (1.5) fără să știe utilizatorul.
+                    fallback_model = genai.GenerativeModel('gemini-1.5-flash')
+                    response = fallback_model.generate_content(content_parts)
+                    
+                    final_html = format_links_new_tab(response.text)
+                    st.markdown(final_html, unsafe_allow_html=True)
+                    st.caption("ℹ️ Răspuns generat din expertiză internă (Search indisponibil momentan).")
+                    
+                    st.session_state.messages.append({"role": "assistant", "content": response.text})
 
             except Exception as e:
-                st.error(f"Eroare: {e}")
+                st.error(f"Eroare sistem: {e}")
