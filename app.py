@@ -3,10 +3,10 @@ import google.generativeai as genai
 from PyPDF2 import PdfReader
 from PIL import Image
 import re
-from duckduckgo_search import DDGS # Biblioteca pentru căutare
+from duckduckgo_search import DDGS
 
 # --- CONFIGURARE PAGINĂ ---
-st.set_page_config(page_title="MediChat Live", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="MediChat MD", page_icon="🩺", layout="wide")
 
 # CSS Custom
 st.markdown("""
@@ -33,20 +33,19 @@ except:
 # --- FUNCȚII UTILITARE ---
 
 def search_web(query):
-    """Caută pe DuckDuckGo și returnează primele 5 rezultate"""
+    """Caută pe DuckDuckGo"""
     try:
         results_text = ""
         with DDGS() as ddgs:
-            # Căutăm 5 rezultate
-            results = list(ddgs.text(query, max_results=5))
+            results = list(ddgs.text(query, max_results=4))
             for res in results:
-                results_text += f"- Titlu: {res['title']}\n  Link: {res['href']}\n  Rezumat: {res['body']}\n\n"
+                results_text += f"- {res['title']}: {res['body']} (Link: {res['href']})\n"
         return results_text
     except Exception as e:
-        return f"Eroare la căutare: {e}"
+        return ""
 
 def format_links_new_tab(text):
-    """Transformă link-urile Markdown în HTML cu target='_blank'"""
+    """Link-uri Markdown -> HTML New Tab"""
     pattern = r'\[([^\]]+)\]\(([^)]+)\)'
     def replace_link(match):
         link_text = match.group(1)
@@ -60,7 +59,7 @@ def reset_conversation():
     st.session_state.images_context = []
 
 def generate_download_text():
-    text = "--- RAPORT MEDICHAT ---\n\n"
+    text = "--- RAPORT CLINIC ---\n\n"
     for msg in st.session_state.messages:
         role = "MEDIC" if msg["role"] == "user" else "AI"
         text += f"{role}: {msg['content']}\n\n"
@@ -76,26 +75,20 @@ if "images_context" not in st.session_state:
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🩺 MediChat Live")
+    st.title("🩺 MediChat MD")
     st.caption(f"Sistem: {active_model_name}")
     
-    if st.button("🗑️ Pacient Nou / Resetare", type="primary"):
+    if st.button("🗑️ Resetare Caz", type="primary"):
         reset_conversation()
         st.rerun()
     
     st.markdown("---")
     
-    # OPȚIUNEA DE CĂUTARE WEB
-    enable_web_search = st.toggle("🌍 Activare Căutare Web (Live)", value=True)
-    if enable_web_search:
-        st.caption("AI-ul va căuta pe internet pentru fiecare întrebare.")
-    else:
-        st.caption("Doar cunoștințe interne (mai rapid).")
-
+    enable_web_search = st.toggle("🌍 Căutare Web Live", value=True)
+    
     st.markdown("---")
     
-    # DATE PACIENT
-    use_patient_data = st.toggle("Mod: Caz Clinic Pacient", value=False)
+    use_patient_data = st.toggle("Mod: Caz Clinic", value=False)
     
     if use_patient_data:
         st.info("📊 Date Pacient")
@@ -127,10 +120,10 @@ with st.sidebar:
         st.session_state.images_context = []
 
     if st.session_state.messages:
-        st.download_button("💾 Descarcă TXT", generate_download_text(), "consult.txt")
+        st.download_button("💾 Export Discuție", generate_download_text(), "consult.txt")
 
 # --- CHAT ---
-st.subheader("Discuție Medicală")
+st.subheader("Discuție Clinică (Peer-to-Peer)")
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -139,57 +132,31 @@ for message in st.session_state.messages:
         else:
             st.markdown(message["content"])
 
-if prompt := st.chat_input("Întrebare..."):
+if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
     
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # Logica de Căutare + Generare
         status_text = "Analizez..."
         web_context = ""
         
-        # 1. Dacă e activată căutarea, căutăm pe net
         if enable_web_search:
-            status_text = "Caut pe internet în timp real..."
+            status_text = "Caut studii și ghiduri..."
             with st.spinner(status_text):
-                search_results = search_web(prompt + " medical guidelines")
-                web_context = f"\n\nINFORMAȚII GĂSITE PE WEB (REAL-TIME):\n{search_results}\nFolosește link-urile de mai sus pentru referințe."
+                search_results = search_web(prompt + " medical guidelines journal")
+                if search_results:
+                    web_context = f"\nINFO WEB RECENTE:\n{search_results}\n"
 
-        # 2. Generăm răspunsul
-        with st.spinner("Generez răspunsul..."):
+        with st.spinner("Generez opinia clinică..."):
             try:
-                sources_request = """
-                CERINȚE:
-                1. Dacă ai primit informații de pe web, folosește-le.
-                2. Include link-uri: [Nume](URL).
-                """
-
-                if use_patient_data:
-                    system_prompt = f"""
-                    Ești un asistent medical expert.
-                    DATE PACIENT: Sex: {gender}, Vârstă: {age}, Greutate: {weight}kg.
-                    DOSAR: {st.session_state.patient_context}
-                    {web_context}
-                    {sources_request}
-                    Răspunde specific.
-                    """
-                    content_parts = [system_prompt, prompt]
-                    if st.session_state.images_context:
-                        content_parts.extend(st.session_state.images_context)
-                else:
-                    system_prompt = f"""
-                    Ești un asistent medical expert.
-                    {web_context}
-                    {sources_request}
-                    """
-                    content_parts = [system_prompt, prompt]
-
-                response = model.generate_content(content_parts)
-                final_html = format_links_new_tab(response.text)
-                st.markdown(final_html, unsafe_allow_html=True)
-                st.session_state.messages.append({"role": "assistant", "content": response.text})
-
-            except Exception as e:
-                st.error(f"Eroare: {e}")
+                # --- AICI ESTE SECRETUL PENTRU TONUL MEDICAL ---
+                professional_instruction = """
+                ROL: Ești un coleg medic expert (Consultant Senior). Discuți cu un alt medic.
+                
+                REGULI STRICTE DE RĂSPUNS:
+                1. NU oferi sfaturi de genul "consultați un medic" sau "mergeți la spital". Utilizatorul ESTE medicul.
+                2. Elimină orice disclaimer adresat pacienților.
+                3. Folosește limbaj medical tehnic, precis și academic.
+                4. Dacă 
