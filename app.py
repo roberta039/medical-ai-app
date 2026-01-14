@@ -25,8 +25,8 @@ except:
 # Aceasta este configurația cea mai sigură care nu dă 404.
 try:
     # Încercăm modelul experimental (mai deștept)
-    model = genai.GenerativeModel('gemini-2.0-flash-exp')
-    active_model_name = "Gemini 2.0 Flash (Exp)"
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    active_model_name = "Gemini 2.5 Flash"
 except:
     # Fallback la modelul stabil
     model = genai.GenerativeModel('gemini-1.5-flash')
