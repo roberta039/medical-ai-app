@@ -6,7 +6,7 @@ from tavily import TavilyClient
 import re
 
 # --- CONFIGURARE PAGINĂ ---
-st.set_page_config(page_title="MediChat Auto", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="MediChat Final", page_icon="🩺", layout="wide")
 
 # CSS Custom
 st.markdown("""
@@ -25,36 +25,61 @@ if "GOOGLE_API_KEY" not in st.secrets or "TAVILY_API_KEY" not in st.secrets:
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 tavily = TavilyClient(api_key=st.secrets["TAVILY_API_KEY"])
 
-# --- FUNCȚIE INTELIGENTĂ DE SELECTARE MODEL ---
-def get_best_available_model():
+# --- FUNCȚIE CRITICĂ: GĂSEȘTE MODELUL DISPONIBIL ---
+@st.cache_resource
+def get_working_model():
     """
-    Încearcă o listă de modele cunoscute până găsește unul care merge.
-    Rezolvă eroarea 404 Not Found.
+    Interoghează Google API pentru a vedea lista exactă de modele disponibile
+    pentru această cheie API și selectează cel mai bun.
     """
-    # Lista de priorități: De la cel mai nou/rapid la cel mai vechi/sigur
-    candidate_models = [
-        'gemini-1.5-flash',
-        'gemini-1.5-flash-latest',
-        'gemini-1.5-flash-001',
-        'gemini-1.5-pro',
-        'gemini-1.5-pro-latest',
-        'gemini-1.0-pro',
-        'gemini-pro' # Cel mai vechi, dar merge mereu
-    ]
-    
-    for model_name in candidate_models:
-        try:
-            # Încercăm să inițializăm modelul
-            model = genai.GenerativeModel(model_name)
-            return model, model_name
-        except:
-            continue
+    try:
+        available_models = []
+        # Listăm toate modelele
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        
+        # Logica de selecție (Căutăm Flash, apoi Pro, apoi orice altceva)
+        selected_model = None
+        
+        # 1. Încercăm Flash 1.5 (Rapid și Cotă Mare)
+        for m in available_models:
+            if "gemini-1.5-flash" in m:
+                selected_model = m
+                break
+        
+        # 2. Dacă nu, Pro 1.5
+        if not selected_model:
+            for m in available_models:
+                if "gemini-1.5-pro" in m:
+                    selected_model = m
+                    break
+        
+        # 3. Dacă nu, Gemini Pro Clasic
+        if not selected_model:
+            for m in available_models:
+                if "gemini-pro" in m:
+                    selected_model = m
+                    break
+                    
+        # 4. Ultimul resort - primul din listă
+        if not selected_model and available_models:
+            selected_model = available_models[0]
             
-    # Dacă nimic nu merge, returnăm default (va crăpa mai jos, dar măcar încercăm)
-    return genai.GenerativeModel('gemini-pro'), "Gemini Pro (Legacy)"
+        if selected_model:
+            return genai.GenerativeModel(selected_model), selected_model
+        else:
+            return None, "Niciun model găsit"
+            
+    except Exception as e:
+        return None, str(e)
 
-# Inițializăm modelul folosind funcția de mai sus
-model, active_model_name = get_best_available_model()
+# Inițializăm modelul
+model, model_name = get_working_model()
+
+if not model:
+    st.error(f"Eroare critică: Nu am putut găsi un model valid pe acest cont Google. Detalii: {model_name}")
+    st.stop()
 
 # --- FUNCȚII UTILITARE ---
 
@@ -104,9 +129,9 @@ if "images_context" not in st.session_state:
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🩺 MediChat Pro")
-    st.success(f"✅ Conectat: {active_model_name}")
-    st.caption("Auto-Detect Mode Active")
+    st.title("🩺 MediChat Auto")
+    # Aici afișăm exact ce model a găsit Google ca fiind valid
+    st.success(f"✅ Conectat la: {model_name}")
     
     if st.button("🗑️ Resetare Caz", type="primary"):
         reset_conversation()
@@ -208,16 +233,4 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
                 st.session_state.messages.append({"role": "assistant", "content": response.text})
 
             except Exception as e:
-                # Dacă primim 404 sau 429 aici, înseamnă că modelul ales totuși a făcut figuri
-                # Încercăm un ultim resort (Gemini Pro vechi)
-                if "404" in str(e) or "429" in str(e):
-                    try:
-                        fallback_model = genai.GenerativeModel('gemini-pro')
-                        response = fallback_model.generate_content(content_parts)
-                        st.markdown(format_links_new_tab(response.text), unsafe_allow_html=True)
-                        st.caption("ℹ️ Răspuns generat cu modelul de rezervă (Legacy).")
-                        st.session_state.messages.append({"role": "assistant", "content": response.text})
-                    except:
-                         st.error(f"Eroare critică API: {e}. Verifică Quota.")
-                else:
-                    st.error(f"Eroare: {e}")
+                 st.error(f"Eroare API: {e}. Dacă primești 429, așteaptă 1 minut.")
