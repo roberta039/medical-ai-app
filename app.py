@@ -2,10 +2,11 @@ import streamlit as st
 import google.generativeai as genai
 from PyPDF2 import PdfReader
 from PIL import Image
+from tavily import TavilyClient
 import re
 
 # --- CONFIGURARE PAGINĂ ---
-st.set_page_config(page_title="MediChat Stabil", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="MediChat Elite", page_icon="🩺", layout="wide")
 
 # CSS Custom
 st.markdown("""
@@ -15,36 +16,53 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Configurare API Key
-try:
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-except:
-    st.error("⚠️ Cheia API lipsește! Seteaz-o în Streamlit Secrets.")
+# --- VERIFICARE API KEYS ---
+if "GOOGLE_API_KEY" not in st.secrets or "TAVILY_API_KEY" not in st.secrets:
+    st.error("⚠️ Lipsesc cheile API! Asigură-te că ai pus GOOGLE_API_KEY și TAVILY_API_KEY în Secrets.")
+    st.stop()
 
-# --- SELECTARE MODEL (FĂRĂ TOOLS) ---
-# Aceasta este configurația cea mai sigură care nu dă 404.
+# Configurare Clienti
+genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+tavily = TavilyClient(api_key=st.secrets["TAVILY_API_KEY"])
+
+# --- SELECTARE MODEL ---
 try:
-    # Încercăm modelul experimental (mai deștept)
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    active_model_name = "Gemini 2.5 Flash"
+    model = genai.GenerativeModel('gemini-2.0-flash-exp')
+    active_model_name = "Gemini 2.0 Flash (Exp)"
 except:
-    # Fallback la modelul stabil
     model = genai.GenerativeModel('gemini-1.5-flash')
     active_model_name = "Gemini 1.5 Flash (Stabil)"
 
 # --- FUNCȚII UTILITARE ---
 
+def search_tavily(query):
+    """
+    Caută profesional surse medicale folosind Tavily AI.
+    Returnează conținut curat și link-uri verificate.
+    """
+    try:
+        # Căutăm specific în domeniul medical
+        response = tavily.search(
+            query=query, 
+            search_depth="advanced", # Căutare adâncă
+            max_results=5,
+            include_domains=["nih.gov", "pubmed.ncbi.nlm.nih.gov", "escardio.org", "heart.org", "who.int", "ema.europa.eu", "medscape.com", "mayoclinic.org"], # Prioritizăm surse de încredere
+            topic="general"
+        )
+        
+        context_text = ""
+        for result in response['results']:
+            context_text += f"SURSA: {result['title']}\nURL: {result['url']}\nCONȚINUT: {result['content']}\n\n"
+            
+        return context_text
+    except Exception as e:
+        return None
+
 def format_links_new_tab(text):
-    """
-    Transformă link-urile Markdown [Text](URL) în HTML care se deschide în tab nou.
-    """
     pattern = r'\[([^\]]+)\]\(([^)]+)\)'
     def replace_link(match):
         link_text = match.group(1)
         link_url = match.group(2)
-        # Verificăm sumar dacă pare un URL valid
-        if "http" not in link_url:
-            return link_text 
         return f'<a href="{link_url}" target="_blank" style="color: #0068c9; text-decoration: none; font-weight: bold;">{link_text} 🔗</a>'
     return re.sub(pattern, replace_link, text)
 
@@ -70,8 +88,8 @@ if "images_context" not in st.session_state:
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🩺 MediChat Pro")
-    st.caption(f"Sistem: {active_model_name}")
+    st.title("🩺 MediChat Elite")
+    st.caption(f"Engine: {active_model_name} + Tavily Search")
     
     if st.button("🗑️ Resetare Caz", type="primary"):
         reset_conversation()
@@ -114,7 +132,7 @@ with st.sidebar:
         st.download_button("💾 Export Discuție", generate_download_text(), "consult.txt")
 
 # --- CHAT ---
-st.subheader("Discuție Clinică")
+st.subheader("Discuție Clinică (Surse Live Verificate)")
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -130,21 +148,37 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Analiză clinică..."):
+        
+        # 1. Căutare pe Web (Tavily)
+        web_context = ""
+        with st.spinner("Caut în ghidurile medicale internaționale (Tavily)..."):
+            # Construim un query medical
+            search_query = prompt
+            if len(search_query) > 200: search_query = search_query[:200] # Tavily preferă query-uri concise
+            
+            raw_results = search_tavily(search_query)
+            
+            if raw_results:
+                web_context = f"""
+                REZULTATE CĂUTARE LIVE (Folosește aceste date pentru răspuns):
+                {raw_results}
+                """
+                st.caption("✅ Date actualizate găsite (NIH, PubMed, Ghiduri).")
+            else:
+                st.caption("⚠️ Nu am găsit rezultate externe. Răspund din expertiză internă.")
+
+        # 2. Generare Răspuns AI
+        with st.spinner("Sintetizez informațiile..."):
             try:
-                # --- PROMPT STRICT PENTRU LINK-URI DIN MEMORIE ---
                 system_prompt = """
                 ROL: Ești un medic Consultant Senior (Peer-to-Peer).
                 
-                REGULI:
-                1. Răspunde colegial, tehnic și la obiect.
-                2. FĂRĂ sfaturi pentru pacienți. Utilizatorul este medic.
-                
-                CERINȚĂ SPECIALĂ PENTRU SURSE:
-                - Deoarece ești expert, cunoști marile ghiduri (ESC, AHA, ADA, NICE, MS.ro).
-                - Când faci o recomandare, citează ghidul și oferă link-ul oficial dacă îl știi.
-                - FORMAT OBLIGATORIU LINK: [Nume Sursă](URL_COMPLET).
-                - Exemplu: [Ghid ESC 2023](https://www.escardio.org/...)
+                INSTRUCȚIUNI:
+                1. Analizează "REZULTATE CĂUTARE LIVE" de mai jos. Acestea sunt sursele de adevăr.
+                2. Răspunde la întrebarea utilizatorului (medic) folosind aceste informații.
+                3. Citează sursele folosind formatul Markdown: [Sursa](URL).
+                4. Nu oferi sfaturi pentru pacienți ("mergeți la medic"). Vorbește tehnic.
+                5. Dacă informația de pe net e incompletă, completează cu cunoștințele tale, dar specifică diferența.
                 """
 
                 context_block = ""
@@ -154,13 +188,20 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
                     DOSAR: {st.session_state.patient_context}
                     """
 
-                final_prompt = f"{system_prompt}\n{context_block}\nÎNTREBARE: {prompt}"
+                final_prompt = f"""
+                {system_prompt}
+                
+                {web_context}
+                
+                {context_block}
+                
+                ÎNTREBARE: {prompt}
+                """
 
                 content_parts = [final_prompt]
                 if st.session_state.images_context and use_patient_data:
                     content_parts.append(st.session_state.images_context[0])
 
-                # Generare SIMPLĂ (Fără tools, deci fără erori 404)
                 response = model.generate_content(content_parts)
                 
                 final_html = format_links_new_tab(response.text)
@@ -168,5 +209,4 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
                 st.session_state.messages.append({"role": "assistant", "content": response.text})
 
             except Exception as e:
-                # Acum eroarea ar trebui să fie imposibilă, dar o prindem just in case
-                st.error(f"Eroare neașteptată: {e}. Încearcă să reîncarci pagina.")
+                st.error(f"Eroare: {e}")
