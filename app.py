@@ -7,7 +7,7 @@ import re
 import time
 
 # --- CONFIGURARE PAGINĂ ---
-st.set_page_config(page_title="MediChat Stable", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="MediChat Auto-Fix", page_icon="🩺", layout="wide")
 
 # CSS Custom
 st.markdown("""
@@ -26,39 +26,70 @@ if "GOOGLE_API_KEY" not in st.secrets or "TAVILY_API_KEY" not in st.secrets:
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 tavily = TavilyClient(api_key=st.secrets["TAVILY_API_KEY"])
 
-# --- SELECTARE MODEL (FORȚATĂ ȘI SIGURĂ) ---
-# Nu mai căutăm automat modele "noi" pentru că Google ne dă modele cu limită 0.
-# Folosim explicit Flash 1.5 care e gratuit și generos.
-
-active_model_name = "Inițializare..."
-try:
-    # Încercăm modelul standard gratuit
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    active_model_name = "Gemini 1.5 Flash (Standard)"
-    
-    # Facem un test "mut" să vedem dacă avem acces real, nu doar teoretic
-    # (Nu consumăm tokens mulți, doar un 'Hi')
-    response = model.generate_content("Hi")
-except Exception as e:
-    # Dacă 1.5 Flash dă eroare (404 sau 429), trecem pe "tancul" vechi: Gemini 1.0 Pro
-    # Acesta nu moare niciodată.
+# --- SELECTARE MODEL DINAMICĂ (CRITIC) ---
+@st.cache_resource
+def find_and_load_model():
+    """
+    Scanează contul pentru ORICE model disponibil și îl returnează.
+    """
+    log_text = ""
     try:
-        model = genai.GenerativeModel('gemini-pro')
-        active_model_name = "Gemini 1.0 Pro (Legacy - Backup)"
-    except Exception as e2:
-        st.error(f"Eroare Totală: Niciun model nu răspunde. Verifică API Key. Detalii: {e2}")
-        st.stop()
+        # 1. Cerem lista de la Google
+        all_models = list(genai.list_models())
+        available_names = []
+        
+        # 2. Filtrăm doar modelele care pot genera text
+        for m in all_models:
+            if 'generateContent' in m.supported_generation_methods:
+                available_names.append(m.name)
+        
+        log_text = f"Modele găsite pe cont: {available_names}"
+        
+        if not available_names:
+            return None, "Niciun model găsit pe acest API Key.", log_text
+
+        # 3. Alegem cel mai bun (Flash > Pro > Orice altceva)
+        chosen_model_name = available_names[0] # Default primul
+        
+        # Încercăm să găsim Flash (e cel mai rapid/ieftin)
+        for name in available_names:
+            if "flash" in name and "1.5" in name:
+                chosen_model_name = name
+                break
+        
+        # Dacă nu Flash, încercăm Pro 1.5
+        if "flash" not in chosen_model_name:
+             for name in available_names:
+                if "pro" in name and "1.5" in name:
+                    chosen_model_name = name
+                    break
+        
+        # 4. Inițializăm
+        model = genai.GenerativeModel(chosen_model_name)
+        return model, chosen_model_name, log_text
+
+    except Exception as e:
+        return None, str(e), log_text
+
+# Încărcare model la start
+model, model_name, debug_log = find_and_load_model()
+
+# Dacă totul a eșuat
+if not model:
+    st.error("❌ EROARE CRITICĂ: Nu am putut conecta niciun model AI.")
+    st.code(debug_log)
+    st.info("Soluție: Mergi în Google AI Studio, creează un proiect nou și o cheie API nouă.")
+    st.stop()
 
 # --- FUNCȚII UTILITARE ---
 
 def search_tavily(query):
-    """Căutare Tavily cu gestionare erori"""
     try:
         response = tavily.search(
             query=query, 
             search_depth="advanced", 
             max_results=5,
-            include_domains=["nih.gov", "pubmed.ncbi.nlm.nih.gov", "escardio.org", "heart.org", "who.int", "medscape.com", "mayoclinic.org"],
+            include_domains=["nih.gov", "pubmed.ncbi.nlm.nih.gov", "escardio.org", "heart.org", "who.int", "medscape.com"],
             topic="general"
         )
         context_text = ""
@@ -99,12 +130,13 @@ if "images_context" not in st.session_state:
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🩺 MediChat")
-    # Afișăm modelul care a funcționat
-    if "Backup" in active_model_name:
-        st.warning(f"⚠️ {active_model_name}")
-    else:
-        st.success(f"✅ {active_model_name}")
+    st.success(f"✅ Conectat: {model_name.replace('models/', '')}")
     
+    # Debug expander (pentru a vedea ce se întâmplă)
+    with st.expander("🛠️ Detalii Tehnice"):
+        st.caption("Modele detectate pe cont:")
+        st.code(debug_log)
+
     if st.button("🗑️ Resetare Caz", type="primary"):
         reset_conversation()
         st.rerun()
@@ -163,25 +195,22 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
 
     with st.chat_message("assistant"):
         
-        # 1. Căutare Tavily
         web_context = ""
         with st.spinner("Caut surse medicale (Tavily)..."):
-            # Limităm lungimea query-ului pt a nu avea erori
             raw_results = search_tavily(prompt[:300])
             if raw_results:
-                web_context = f"REZULTATE WEB (Surse): \n{raw_results}"
+                web_context = f"REZULTATE WEB (Surse):\n{raw_results}"
                 st.caption("✅ Surse identificate.")
             else:
                 st.caption("⚠️ Răspund din baza de date internă.")
 
-        # 2. Generare Răspuns
         with st.spinner("Generez răspunsul..."):
             try:
                 system_prompt = """
                 ROL: Medic Consultant Senior.
                 SARCINĂ: Răspunde colegial unui alt medic.
                 REGULI:
-                1. Bazează-te pe REZULTATELE WEB de mai jos dacă există.
+                1. Bazează-te PRIORITAR pe REZULTATELE WEB de mai jos.
                 2. Citează sursele: [Nume](URL).
                 3. FĂRĂ sfaturi pentru pacienți.
                 """
@@ -197,11 +226,11 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
 
                 content_parts = [final_prompt]
                 if st.session_state.images_context and use_patient_data:
-                    # Unele modele vechi nu suportă imagini, tratăm cazul
+                     # Încercăm să adăugăm imaginea, dacă modelul suportă
                     try:
                         content_parts.append(st.session_state.images_context[0])
                     except:
-                        pass # Dacă modelul nu suportă imagini, le ignorăm silențios
+                        pass
 
                 response = model.generate_content(content_parts)
                 
@@ -210,8 +239,4 @@ if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
                 st.session_state.messages.append({"role": "assistant", "content": response.text})
 
             except Exception as e:
-                # Tratare eroare 429 specifică
-                if "429" in str(e):
-                     st.error("⚠️ Prea multe cereri. Așteaptă 30 de secunde.")
-                else:
-                     st.error(f"Eroare: {e}")
+                st.error(f"Eroare: {e}")
