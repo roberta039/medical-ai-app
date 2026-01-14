@@ -27,8 +27,8 @@ tavily = TavilyClient(api_key=st.secrets["TAVILY_API_KEY"])
 
 # --- SELECTARE MODEL ---
 try:
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    active_model_name = "Gemini 2.5 Flash"
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    active_model_name = "Gemini 1.5 Flash"
 except:
     model = genai.GenerativeModel('gemini-1.5-flash')
     active_model_name = "Gemini 1.5 Flash (Stabil)"
