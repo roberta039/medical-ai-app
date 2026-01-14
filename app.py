@@ -9,17 +9,20 @@ import datetime
 # --- 1. CONFIGURARE PAGINĂ & STIL ---
 st.set_page_config(page_title="MediChat AI Pro", page_icon="🩺", layout="wide")
 
-# CSS pentru stilizare
+# CSS: Stilizează link-urile și chat-ul
 st.markdown("""
     <style>
     .stChatMessage { font-family: 'Arial', sans-serif; }
     .stButton button { width: 100%; border-radius: 8px; }
     div[data-baseweb="input"] { background-color: #f0f2f6; }
+    /* Stil pentru link-uri în chat */
+    a { text-decoration: none; font-weight: bold; color: #0066cc !important; }
+    a:hover { text-decoration: underline; color: #004499 !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. DISCLAIMER OBLIGATORIU ---
-st.warning("⚠️ **AVERTISMENT:** Asistent AI experimental. Verificați întotdeauna ghidurile oficiale. Nu introduceți date personale (GDPR).")
+# --- 2. DISCLAIMER ---
+st.warning("⚠️ **PROTOTIP MEDICAL:** Verificați întotdeauna sursele oficiale. Link-urile sunt generate automat și trebuie validate.")
 
 # --- 3. VERIFICARE API KEYS ---
 if "GOOGLE_API_KEY" not in st.secrets or "TAVILY_API_KEY" not in st.secrets:
@@ -34,7 +37,7 @@ tavily = TavilyClient(api_key=st.secrets["TAVILY_API_KEY"])
 
 @st.cache_resource
 def load_best_model():
-    """Găsește cel mai bun model Gemini disponibil pe cont."""
+    """Găsește cel mai bun model Gemini disponibil."""
     try:
         all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         chosen_model = next((m for m in all_models if "flash" in m and "1.5" in m), None)
@@ -47,31 +50,34 @@ def load_best_model():
 model, model_name = load_best_model()
 
 if not model:
-    st.error("❌ Nu am putut încărca modelul AI. Verifică API Key-ul.")
+    st.error("❌ EROARE: Nu am putut încărca modelul AI.")
     st.stop()
 
 def search_tavily(query):
-    """Caută pe site-uri medicale, forțând rezultate recente."""
+    """Caută date recente și returnează titlu + URL."""
     try:
-        # MODIFICARE MAJORĂ: Forțăm căutarea să fie recentă
+        # Forțăm ani recenți în query
         current_year = datetime.datetime.now().year
-        optimized_query = f"{query} latest clinical guidelines medical research updates {current_year} {current_year-1}"
+        optimized_query = f"{query} latest clinical guidelines medical research {current_year} {current_year-1}"
         
         response = tavily.search(
             query=optimized_query, 
             search_depth="advanced", 
-            max_results=6, # Căutăm mai multe rezultate
-            include_domains=["nih.gov", "pubmed.ncbi.nlm.nih.gov", "escardio.org", "heart.org", "who.int", "medscape.com", "mayoclinic.org", "nejm.org", "thelancet.com"],
+            max_results=5, 
+            include_domains=["nih.gov", "pubmed.ncbi.nlm.nih.gov", "escardio.org", "heart.org", "who.int", "medscape.com", "mayoclinic.org", "nejm.org", "thelancet.com", "uptodate.com"],
             topic="general"
         )
         context_text = ""
+        # Construim un text clar pentru AI, astfel încât să știe ce link aparține cărui titlu
         for result in response['results']:
-            context_text += f"- SURSA: {result['title']}\n  URL: {result['url']}\n  INFO: {result['content']}\n\n"
+            context_text += f"SURSA_ID: {result['title']} || URL_EXACT: {result['url']} || TEXT: {result['content']}\n\n"
         return context_text
     except Exception as e:
         return ""
 
 def format_links(text):
+    """Transformă [Titlu](URL) în HTML <a href='URL'>Titlu 🔗</a>"""
+    # Regex pentru markdown standard [text](url)
     pattern = r'\[([^\]]+)\]\(([^)]+)\)'
     return re.sub(pattern, r'<a href="\2" target="_blank" style="color: #0068c9; font-weight: bold;">\1 🔗</a>', text)
 
@@ -84,57 +90,39 @@ def transcribe_audio(audio_bytes):
         return None
 
 def generate_report_text(gender, age, weight, patient_context, messages):
-    txt = f"=== RAPORT MEDICAL AI ===\nData: {datetime.datetime.now().strftime('%d-%m-%Y %H:%M')}\n\n"
-    txt += "--- DATE PACIENT ---\n"
-    txt += f"Gen: {gender}\nVarsta: {age} ani\nGreutate: {weight} kg\n"
-    if patient_context:
-        txt += f"Context Dosar: {len(patient_context)} caractere extrase.\n"
-    else:
-        txt += "Context Dosar: Fără documente încărcate.\n"
-    
-    txt += "\n--- ISTORIC CONSULTAȚIE ---\n"
+    txt = f"=== RAPORT MEDICAL ===\nData: {datetime.datetime.now().strftime('%d-%m-%Y %H:%M')}\n\n"
+    txt += f"Pacient: {gender}, {age} ani, {weight} kg\n"
+    txt += "-" * 40 + "\n"
     for msg in messages:
         role = "MEDIC" if msg["role"] == "user" else "AI"
-        content = msg["content"].replace("**", "").replace("__", "")
+        content = msg["content"].replace("**", "")
         txt += f"\n[{role}]: {content}\n"
-        txt += "-" * 40 + "\n"
     return txt
 
-# --- 5. GESTIONARE STARE ---
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "patient_context" not in st.session_state:
-    st.session_state.patient_context = ""
-if "images_context" not in st.session_state:
-    st.session_state.images_context = []
+# --- 5. STATE ---
+if "messages" not in st.session_state: st.session_state.messages = []
+if "patient_context" not in st.session_state: st.session_state.patient_context = ""
+if "images_context" not in st.session_state: st.session_state.images_context = []
 
-# --- 6. SIDEBAR (CONTROALE) ---
+# --- 6. SIDEBAR ---
 with st.sidebar:
     st.title("🩺 Control Panel")
     
-    col_set_1, col_set_2 = st.columns(2)
-    with col_set_1:
-        use_web_search = st.toggle("🌐 Internet", value=True, help="Caută cele mai recente ghiduri (2024-2025).")
-    with col_set_2:
-        use_patient_mode = st.toggle("📂 Dosar", value=False)
-
+    col1, col2 = st.columns(2)
+    with col1: use_web_search = st.toggle("🌐 Internet", value=True)
+    with col2: use_patient_mode = st.toggle("📂 Dosar", value=False)
+    
     st.divider()
     
     gender_exp, age_exp, weight_exp = "N/A", "N/A", "N/A"
-
     if use_patient_mode:
-        st.subheader("📝 Date Pacient")
-        st.info("Introduceți detaliile pentru context.")
-        
-        gender = st.selectbox("Gen / Sex", ["Masculin", "Feminin"], index=0)
-        age = st.number_input("Vârstă (Ani)", min_value=0, max_value=120, value=45, step=1)
-        weight = st.number_input("Greutate (Kg)", min_value=0.0, max_value=300.0, value=75.0, step=0.1, format="%.1f")
-        
+        st.subheader("Date Pacient")
+        gender = st.selectbox("Gen", ["Masculin", "Feminin"])
+        age = st.number_input("Ani", value=45)
+        weight = st.number_input("Kg", value=75.0)
         gender_exp, age_exp, weight_exp = gender, age, weight
-
-        st.markdown("**Atașează Documente:**")
-        uploaded_files = st.file_uploader("PDF Analize / Poze EKG...", type=['pdf', 'png', 'jpg', 'jpeg'], accept_multiple_files=True)
         
+        uploaded_files = st.file_uploader("PDF / Foto", type=['pdf', 'png', 'jpg'], accept_multiple_files=True)
         if uploaded_files:
             raw_text = ""
             images = []
@@ -142,39 +130,26 @@ with st.sidebar:
                 if file.type == "application/pdf":
                     try:
                         reader = PdfReader(file)
-                        for page in reader.pages:
-                            text_page = page.extract_text()
-                            if text_page: raw_text += text_page + "\n"
-                    except:
-                        st.error(f"Eroare fișier: {file.name}")
+                        for page in reader.pages: raw_text += page.extract_text() + "\n"
+                    except: pass
                 else:
                     images.append(Image.open(file))
-            
             st.session_state.patient_context = raw_text
             st.session_state.images_context = images
-            if raw_text or images:
-                st.caption(f"✅ Sistem: {len(images)} imagini, text extras.")
+            if raw_text or images: st.success("✅ Date încărcate.")
     else:
         st.session_state.patient_context = ""
         st.session_state.images_context = []
 
     st.divider()
-    
-    st.subheader("💾 Export")
     if st.session_state.messages:
-        report_data = generate_report_text(gender_exp, age_exp, weight_exp, st.session_state.patient_context, st.session_state.messages)
-        st.download_button(
-            label="📄 Descarcă Raport (.txt)",
-            data=report_data,
-            file_name=f"Raport_Medical_{datetime.datetime.now().strftime('%Y%m%d')}.txt",
-            mime="text/plain"
-        )
-    
-    if st.button("🗑️ Conversație Nouă", type="primary"):
+        report = generate_report_text(gender_exp, age_exp, weight_exp, st.session_state.patient_context, st.session_state.messages)
+        st.download_button("📄 Descarcă Raport", report, f"Raport_{datetime.date.today()}.txt")
+    if st.button("🗑️ Reset", type="primary"):
         st.session_state.messages = []
         st.rerun()
 
-# --- 7. INTERFAȚA DE CHAT ---
+# --- 7. CHAT UI ---
 st.subheader("💬 Asistent Medical")
 
 for msg in st.session_state.messages:
@@ -184,87 +159,78 @@ for msg in st.session_state.messages:
         else:
             st.markdown(msg["content"])
 
-# --- 8. INPUT (VOCE & TEXT) ---
-audio_val = st.audio_input("🎤 Dictare (beta)")
+# --- 8. LOGICĂ & PROMPTING ---
+audio_val = st.audio_input("🎤 Dictare")
 voice_text = ""
-
 if audio_val:
     with st.spinner("🎧 Transcriu..."):
-        audio_bytes = audio_val.read()
-        transcription = transcribe_audio(audio_bytes)
-        if transcription: voice_text = transcription
+        t = transcribe_audio(audio_val.read())
+        if t: voice_text = t
 
-user_input = st.chat_input("Scrie întrebarea aici...")
+user_input = st.chat_input("Întrebare...")
+final_prompt = user_input if user_input else (voice_text if voice_text and audio_val else None)
 
-final_prompt = None
-if user_input:
-    final_prompt = user_input
-elif voice_text and audio_val: 
-    final_prompt = voice_text
-
-# --- 9. PROCESARE ---
 if final_prompt:
-    
     st.session_state.messages.append({"role": "user", "content": final_prompt})
-    with st.chat_message("user"):
-        st.markdown(final_prompt)
+    with st.chat_message("user"): st.markdown(final_prompt)
 
     with st.chat_message("assistant"):
         response_placeholder = st.empty()
         
-        # 1. SEARCH UPDATE: Tavily va căuta explicit 2024-2025
+        # SEARCH
         web_context_str = ""
         if use_web_search:
-            with st.spinner("🔍 Caut cele mai noi ghiduri (2024-2025)..."):
-                # Aici apelăm funcția modificată care adaugă automat anul curent
-                search_res = search_tavily(final_prompt[:400])
-                if search_res:
-                    web_context_str = f"CONTEXT WEB RECENT (Surse):\n{search_res}\n"
+            with st.spinner("🔍 Caut surse 2024-2025..."):
+                res = search_tavily(final_prompt[:400])
+                if res: web_context_str = f"CONTEXT WEB (Conține linkuri reale):\n{res}\n"
         
+        # PATIENT
         patient_block = ""
         if use_patient_mode:
-            safe_context = st.session_state.patient_context[:6000] if st.session_state.patient_context else "Fără text extras."
-            patient_block = f"""
-            --- DATE PACIENT ---
-            Gen: {gender}, Vârstă: {age} ani, Greutate: {weight} kg
-            DOSAR MEDICAL: {safe_context}
-            """
+            patient_block = f"PACIENT: {gender}, {age} ani, {weight}kg.\nDOSAR: {st.session_state.patient_context[:6000]}"
         
+        # HISTORY
         history_str = ""
-        for m in st.session_state.messages[-5:-1]: 
-            role_label = "MEDIC" if m["role"] == "user" else "AI"
-            history_str += f"{role_label}: {m['content']}\n"
+        for m in st.session_state.messages[-5:-1]:
+            history_str += f"{'MEDIC' if m['role']=='user' else 'AI'}: {m['content']}\n"
 
-        # 2. SYSTEM PROMPT UPDATE: Instruim AI-ul să verifice data
-        current_date_str = datetime.datetime.now().strftime('%d %B %Y')
-        instructions = f"""
-        Ești un Consultant Medical Senior AI.
-        DATA CURENTĂ: {current_date_str}.
+        # SYSTEM PROMPT - Aici e cheia pentru link-uri
+        current_date = datetime.datetime.now().strftime('%B %Y')
+        system_prompt = f"""
+        Ești un Asistent Medical Expert. DATA AZI: {current_date}.
         
-        REGULI STRICTE:
-        1. Caută PRIORITAR informații din anii 2024 și 2025.
-        2. Dacă în CONTEXT WEB apar ghiduri vechi (ex: 2016) și unele noi (2023-2025), ignoră-le pe cele vechi.
-        3. Dacă sursele sunt vechi, menționează explicit: "Bazat pe ghidurile din [AN]".
-        4. Răspunde concis, medical.
+        INSTRUCȚIUNI OBLIGATORII:
+        1. Caută date din 2024-2025. Ignoră datele vechi dacă există altele noi.
+        2. Răspunde structurat, cu bullet points.
+        
+        3. SURSE ȘI BIBLIOGRAFIE (FOARTE IMPORTANT):
+           - Dacă ai folosit 'CONTEXT WEB', la finalul răspunsului ești OBLIGAT să adaugi o secțiune separată:
+           ### 📚 Surse Verificate
+           - Trebuie să listezi link-urile sub formatul Markdown:
+             - [Titlu Sursă](URL_EXACT_DIN_CONTEXT)
+           - NU inventa link-uri. Folosește doar URL-urile furnizate în context.
+        
+        --- CONTEXT WEB ---
+        {web_context_str}
+        
+        --- DATE PACIENT ---
+        {patient_block}
+        
+        --- ISTORIC ---
+        {history_str}
+        
+        ÎNTREBARE: {final_prompt}
         """
-        
-        full_prompt = f"{instructions}\n\n--- ISTORIC ---\n{history_str}\n\n{web_context_str}\n\n{patient_block}\n\n--- ÎNTREBARE ---\nMEDIC: {final_prompt}"
 
         try:
-            with st.spinner("Analizez sursele..."):
-                content_parts = [full_prompt]
-                
+            with st.spinner("Generez răspuns cu bibliografie..."):
+                parts = [system_prompt]
                 if use_patient_mode and st.session_state.images_context:
-                    content_parts.extend(st.session_state.images_context)
+                    parts.extend(st.session_state.images_context)
                 
-                response = model.generate_content(content_parts)
-                response_text = response.text
-                
-                final_html = format_links(response_text)
+                response = model.generate_content(parts)
+                final_html = format_links(response.text)
                 response_placeholder.markdown(final_html, unsafe_allow_html=True)
-                
-                st.session_state.messages.append({"role": "assistant", "content": response_text})
-                
+                st.session_state.messages.append({"role": "assistant", "content": response.text})
         except Exception as e:
-            st.error("Eroare generare.")
-            st.code(str(e))
+            st.error(f"Eroare: {e}")
