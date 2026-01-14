@@ -9,20 +9,18 @@ import datetime
 # --- 1. CONFIGURARE PAGINĂ & STIL ---
 st.set_page_config(page_title="MediChat AI Pro", page_icon="🩺", layout="wide")
 
-# CSS: Stilizează link-urile și chat-ul
 st.markdown("""
     <style>
     .stChatMessage { font-family: 'Arial', sans-serif; }
     .stButton button { width: 100%; border-radius: 8px; }
     div[data-baseweb="input"] { background-color: #f0f2f6; }
-    /* Stil pentru link-uri în chat */
     a { text-decoration: none; font-weight: bold; color: #0066cc !important; }
     a:hover { text-decoration: underline; color: #004499 !important; }
     </style>
     """, unsafe_allow_html=True)
 
 # --- 2. DISCLAIMER ---
-st.warning("⚠️ **PROTOTIP MEDICAL:** Verificați întotdeauna sursele oficiale. Link-urile sunt generate automat și trebuie validate.")
+st.warning("⚠️ **PROTOTIP MEDICAL:** Verificați întotdeauna sursele oficiale. Link-urile sunt generate automat.")
 
 # --- 3. VERIFICARE API KEYS ---
 if "GOOGLE_API_KEY" not in st.secrets or "TAVILY_API_KEY" not in st.secrets:
@@ -33,30 +31,25 @@ if "GOOGLE_API_KEY" not in st.secrets or "TAVILY_API_KEY" not in st.secrets:
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 tavily = TavilyClient(api_key=st.secrets["TAVILY_API_KEY"])
 
-# --- 4. FUNCȚII UTILITARE & MODEL ---
+# --- 4. FUNCȚII UTILITARE ---
 
-@st.cache_resource
-def load_best_model():
-    """Găsește cel mai bun model Gemini disponibil."""
+@st.cache_data
+def get_available_models():
+    """Returnează lista tuturor modelelor Gemini disponibile pe cont."""
     try:
-        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        chosen_model = next((m for m in all_models if "flash" in m and "1.5" in m), None)
-        if not chosen_model:
-            chosen_model = next((m for m in all_models if "pro" in m and "1.5" in m), all_models[0])
-        return genai.GenerativeModel(chosen_model), chosen_model
+        model_list = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                model_list.append(m.name)
+        # Sortăm ca să apară cele mai noi primele (de obicei Flash/Pro 1.5 sunt ultimele alfabetice, deci le inversăm sau le căutăm)
+        model_list.sort(reverse=True)
+        return model_list
     except Exception as e:
-        return None, str(e)
-
-model, model_name = load_best_model()
-
-if not model:
-    st.error("❌ EROARE: Nu am putut încărca modelul AI.")
-    st.stop()
+        return []
 
 def search_tavily(query):
     """Caută date recente și returnează titlu + URL."""
     try:
-        # Forțăm ani recenți în query
         current_year = datetime.datetime.now().year
         optimized_query = f"{query} latest clinical guidelines medical research {current_year} {current_year-1}"
         
@@ -68,7 +61,6 @@ def search_tavily(query):
             topic="general"
         )
         context_text = ""
-        # Construim un text clar pentru AI, astfel încât să știe ce link aparține cărui titlu
         for result in response['results']:
             context_text += f"SURSA_ID: {result['title']} || URL_EXACT: {result['url']} || TEXT: {result['content']}\n\n"
         return context_text
@@ -76,15 +68,13 @@ def search_tavily(query):
         return ""
 
 def format_links(text):
-    """Transformă [Titlu](URL) în HTML <a href='URL'>Titlu 🔗</a>"""
-    # Regex pentru markdown standard [text](url)
     pattern = r'\[([^\]]+)\]\(([^)]+)\)'
     return re.sub(pattern, r'<a href="\2" target="_blank" style="color: #0068c9; font-weight: bold;">\1 🔗</a>', text)
 
-def transcribe_audio(audio_bytes):
+def transcribe_audio(audio_bytes, model_instance):
     try:
         prompt_transcribe = "Transcrede acest fișier audio exact în limba română. Este o întrebare medicală."
-        response = model.generate_content([prompt_transcribe, {"mime_type": "audio/wav", "data": audio_bytes}])
+        response = model_instance.generate_content([prompt_transcribe, {"mime_type": "audio/wav", "data": audio_bytes}])
         return response.text
     except Exception as e:
         return None
@@ -108,6 +98,27 @@ if "images_context" not in st.session_state: st.session_state.images_context = [
 with st.sidebar:
     st.title("🩺 Control Panel")
     
+    # --- SELECTARE MODEL ---
+    st.markdown("### 🤖 Configurare AI")
+    available_models = get_available_models()
+    
+    if available_models:
+        # Încercăm să selectăm automat un model 'flash' ca default
+        default_index = 0
+        for i, m_name in enumerate(available_models):
+            if "flash" in m_name and "1.5" in m_name:
+                default_index = i
+                break
+        
+        selected_model_name = st.selectbox("Alege Modelul:", available_models, index=default_index)
+        # Inițializăm modelul ales
+        model = genai.GenerativeModel(selected_model_name)
+    else:
+        st.error("Nu s-au găsit modele.")
+        st.stop()
+    
+    st.divider()
+
     col1, col2 = st.columns(2)
     with col1: use_web_search = st.toggle("🌐 Internet", value=True)
     with col2: use_patient_mode = st.toggle("📂 Dosar", value=False)
@@ -150,7 +161,7 @@ with st.sidebar:
         st.rerun()
 
 # --- 7. CHAT UI ---
-st.subheader("💬 Asistent Medical")
+st.subheader(f"💬 Discuție Medicală ({selected_model_name.replace('models/', '')})")
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -164,7 +175,7 @@ audio_val = st.audio_input("🎤 Dictare")
 voice_text = ""
 if audio_val:
     with st.spinner("🎧 Transcriu..."):
-        t = transcribe_audio(audio_val.read())
+        t = transcribe_audio(audio_val.read(), model) # Trimitem modelul selectat
         if t: voice_text = t
 
 user_input = st.chat_input("Întrebare...")
@@ -180,7 +191,7 @@ if final_prompt:
         # SEARCH
         web_context_str = ""
         if use_web_search:
-            with st.spinner("🔍 Caut surse 2024-2026..."):
+            with st.spinner("🔍 Caut surse 2024-2025..."):
                 res = search_tavily(final_prompt[:400])
                 if res: web_context_str = f"CONTEXT WEB (Conține linkuri reale):\n{res}\n"
         
@@ -194,21 +205,18 @@ if final_prompt:
         for m in st.session_state.messages[-5:-1]:
             history_str += f"{'MEDIC' if m['role']=='user' else 'AI'}: {m['content']}\n"
 
-        # SYSTEM PROMPT - Aici e cheia pentru link-uri
+        # SYSTEM PROMPT
         current_date = datetime.datetime.now().strftime('%B %Y')
         system_prompt = f"""
         Ești un Asistent Medical Expert. DATA AZI: {current_date}.
         
-        INSTRUCȚIUNI OBLIGATORII:
-        1. Caută date din 2024-2026. Ignoră datele vechi dacă există altele noi.
-        2. Răspunde structurat, cu bullet points.
-        
-        3. SURSE ȘI BIBLIOGRAFIE (FOARTE IMPORTANT):
-           - Dacă ai folosit 'CONTEXT WEB', la finalul răspunsului ești OBLIGAT să adaugi o secțiune separată:
+        INSTRUCȚIUNI:
+        1. Caută date din 2024-2025.
+        2. Răspunde structurat.
+        3. LISTA BIBLIOGRAFICĂ (OBLIGATORIU):
+           - Dacă există surse web, listează-le la final:
            ### 📚 Surse Verificate
-           - Trebuie să listezi link-urile sub formatul Markdown:
-             - [Titlu Sursă](URL_EXACT_DIN_CONTEXT)
-           - NU inventa link-uri. Folosește doar URL-urile furnizate în context.
+           - [Titlu](URL_EXACT)
         
         --- CONTEXT WEB ---
         {web_context_str}
@@ -223,7 +231,7 @@ if final_prompt:
         """
 
         try:
-            with st.spinner("Generez răspuns cu bibliografie..."):
+            with st.spinner(f"Generez răspuns folosind {selected_model_name.replace('models/', '')}..."):
                 parts = [system_prompt]
                 if use_patient_mode and st.session_state.images_context:
                     parts.extend(st.session_state.images_context)
