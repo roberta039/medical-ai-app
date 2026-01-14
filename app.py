@@ -4,122 +4,77 @@ from PyPDF2 import PdfReader
 from PIL import Image
 from tavily import TavilyClient
 import re
-import time
 
-# --- CONFIGURARE PAGINĂ ---
-st.set_page_config(page_title="MediChat Auto-Fix", page_icon="🩺", layout="wide")
+# --- 1. CONFIGURARE PAGINĂ & STIL ---
+st.set_page_config(page_title="MediChat AI Pro", page_icon="🩺", layout="wide")
 
-# CSS Custom
+# CSS pentru a face chat-ul mai lizibil
 st.markdown("""
     <style>
     .stChatMessage { font-family: 'Arial', sans-serif; }
-    .stButton button { width: 100%; border-radius: 5px; }
+    .stButton button { width: 100%; border-radius: 8px; }
+    div[data-testid="stToast"] { padding: 1rem; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- VERIFICARE API KEYS ---
+# --- 2. DISCLAIMER OBLIGATORIU ---
+st.warning("⚠️ **AVERTISMENT MEDICAL:** Acest asistent AI este un prototip experimental. Răspunsurile pot fi inexacte sau halucinate. Verificați întotdeauna informațiile cu ghiduri clinice oficiale. Nu introduceți date personale care pot identifica pacienții (Nume, CNP, Adresă).")
+
+# --- 3. VERIFICARE API KEYS ---
 if "GOOGLE_API_KEY" not in st.secrets or "TAVILY_API_KEY" not in st.secrets:
-    st.error("⚠️ Lipsesc cheile API! Seteaz-o în Streamlit Secrets.")
+    st.error("⚠️ Lipsesc cheile API! Setează `GOOGLE_API_KEY` și `TAVILY_API_KEY` în Streamlit Secrets.")
     st.stop()
 
 # Configurare Clienti
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 tavily = TavilyClient(api_key=st.secrets["TAVILY_API_KEY"])
 
-# --- SELECTARE MODEL DINAMICĂ (CRITIC) ---
+# --- 4. FUNCȚII UTILITARE & MODEL ---
+
 @st.cache_resource
-def find_and_load_model():
-    """
-    Scanează contul pentru ORICE model disponibil și îl returnează.
-    """
-    log_text = ""
+def load_best_model():
+    """Găsește cel mai bun model Gemini disponibil pe cont."""
     try:
-        # 1. Cerem lista de la Google
-        all_models = list(genai.list_models())
-        available_names = []
+        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        # 2. Filtrăm doar modelele care pot genera text
-        for m in all_models:
-            if 'generateContent' in m.supported_generation_methods:
-                available_names.append(m.name)
-        
-        log_text = f"Modele găsite pe cont: {available_names}"
-        
-        if not available_names:
-            return None, "Niciun model găsit pe acest API Key.", log_text
-
-        # 3. Alegem cel mai bun (Flash > Pro > Orice altceva)
-        chosen_model_name = available_names[0] # Default primul
-        
-        # Încercăm să găsim Flash (e cel mai rapid/ieftin)
-        for name in available_names:
-            if "flash" in name and "1.5" in name:
-                chosen_model_name = name
-                break
-        
-        # Dacă nu Flash, încercăm Pro 1.5
-        if "flash" not in chosen_model_name:
-             for name in available_names:
-                if "pro" in name and "1.5" in name:
-                    chosen_model_name = name
-                    break
-        
-        # 4. Inițializăm
-        model = genai.GenerativeModel(chosen_model_name)
-        return model, chosen_model_name, log_text
-
+        # Prioritate: Flash (rapid) -> Pro (complex) -> Orice altceva
+        chosen_model = next((m for m in all_models if "flash" in m and "1.5" in m), None)
+        if not chosen_model:
+            chosen_model = next((m for m in all_models if "pro" in m and "1.5" in m), all_models[0])
+            
+        return genai.GenerativeModel(chosen_model), chosen_model
     except Exception as e:
-        return None, str(e), log_text
+        return None, str(e)
 
-# Încărcare model la start
-model, model_name, debug_log = find_and_load_model()
+model, model_name = load_best_model()
 
-# Dacă totul a eșuat
 if not model:
-    st.error("❌ EROARE CRITICĂ: Nu am putut conecta niciun model AI.")
-    st.code(debug_log)
-    st.info("Soluție: Mergi în Google AI Studio, creează un proiect nou și o cheie API nouă.")
+    st.error("❌ Nu am putut încărca modelul AI. Verifică API Key-ul.")
     st.stop()
 
-# --- FUNCȚII UTILITARE ---
-
 def search_tavily(query):
+    """Caută pe site-uri medicale de încredere."""
     try:
         response = tavily.search(
             query=query, 
             search_depth="advanced", 
             max_results=5,
-            include_domains=["nih.gov", "pubmed.ncbi.nlm.nih.gov", "escardio.org", "heart.org", "who.int", "medscape.com"],
+            include_domains=["nih.gov", "pubmed.ncbi.nlm.nih.gov", "escardio.org", "heart.org", "who.int", "medscape.com", "mayoclinic.org"],
             topic="general"
         )
         context_text = ""
         for result in response['results']:
-            context_text += f"SURSA: {result['title']}\nURL: {result['url']}\nCONȚINUT: {result['content']}\n\n"
+            context_text += f"- SURSA: {result['title']}\n  URL: {result['url']}\n  INFO: {result['content']}\n\n"
         return context_text
     except Exception as e:
-        return None
+        return ""
 
-def format_links_new_tab(text):
+def format_links(text):
+    """Transformă linkurile markdown în linkuri HTML care se deschid în tab nou."""
     pattern = r'\[([^\]]+)\]\(([^)]+)\)'
-    def replace_link(match):
-        link_text = match.group(1)
-        link_url = match.group(2)
-        return f'<a href="{link_url}" target="_blank" style="color: #0068c9; text-decoration: none; font-weight: bold;">{link_text} 🔗</a>'
-    return re.sub(pattern, replace_link, text)
+    return re.sub(pattern, r'<a href="\2" target="_blank" style="color: #0068c9; font-weight: bold;">\1 🔗</a>', text)
 
-def reset_conversation():
-    st.session_state.messages = []
-    st.session_state.patient_context = ""
-    st.session_state.images_context = []
-
-def generate_download_text():
-    text = "--- RAPORT CLINIC ---\n\n"
-    for msg in st.session_state.messages:
-        role = "MEDIC" if msg["role"] == "user" else "AI"
-        text += f"{role}: {msg['content']}\n\n"
-    return text
-
-# --- INITIALIZARE STATE ---
+# --- 5. GESTIONARE STARE (SESSION STATE) ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "patient_context" not in st.session_state:
@@ -127,116 +82,106 @@ if "patient_context" not in st.session_state:
 if "images_context" not in st.session_state:
     st.session_state.images_context = []
 
-# --- SIDEBAR ---
+# --- 6. SIDEBAR (CONTROALE) ---
 with st.sidebar:
-    st.title("🩺 MediChat")
-    st.success(f"✅ Conectat: {model_name.replace('models/', '')}")
+    st.title("🩺 Control Panel")
+    st.caption(f"Model activ: `{model_name.split('/')[-1]}`")
     
-    # Debug expander (pentru a vedea ce se întâmplă)
-    with st.expander("🛠️ Detalii Tehnice"):
-        st.caption("Modele detectate pe cont:")
-        st.code(debug_log)
-
-    if st.button("🗑️ Resetare Caz", type="primary"):
-        reset_conversation()
-        st.rerun()
+    st.markdown("### ⚙️ Setări Asistent")
+    
+    # BUTONUL CERUT: Activare/Dezactivare Internet
+    use_web_search = st.toggle("🌐 Căutare Web (Tavily)", value=True, help="Dacă este activat, AI-ul va căuta cele mai recente studii/ghiduri. Dacă e oprit, răspunde doar din cunoștințele interne.")
     
     st.markdown("---")
     
-    use_patient_data = st.toggle("Mod: Caz Clinic", value=False)
+    # MODUL CAZ CLINIC
+    use_patient_mode = st.toggle("📂 Mod: Caz Clinic (Date Pacient)", value=False)
     
-    if use_patient_data:
-        st.info("📊 Date Pacient")
-        col1, col2 = st.columns(2)
-        with col1:
-            gender = st.selectbox("Sex", ["M", "F"], label_visibility="collapsed")
-        with col2:
-            age = st.number_input("Ani", value=30, label_visibility="collapsed")
-        weight = st.number_input("Greutate (kg)", value=70.0)
-        uploaded_files = st.file_uploader("Dosar", type=['pdf', 'png', 'jpg'], accept_multiple_files=True)
+    if use_patient_mode:
+        st.info("📝 Introdu datele anonimizate ale pacientului.")
+        c1, c2, c3 = st.columns(3)
+        with c1: gender = st.selectbox("Sex", ["M", "F"], label_visibility="collapsed")
+        with c2: age = st.number_input("Ani", value=45, label_visibility="collapsed")
+        with c3: weight = st.number_input("Kg", value=75, label_visibility="collapsed")
         
-        if st.button("Procesează Dosarul"):
-            if uploaded_files:
-                with st.spinner("Se citește dosarul..."):
-                    raw_text = ""
-                    images = []
-                    for file in uploaded_files:
-                        if file.type == "application/pdf":
-                            reader = PdfReader(file)
-                            for page in reader.pages:
-                                raw_text += page.extract_text() + "\n"
-                        else:
-                            images.append(Image.open(file))
-                    st.session_state.patient_context = raw_text
-                    st.session_state.images_context = images
-                    st.success("Date încărcate!")
+        uploaded_files = st.file_uploader("Analize (PDF) sau Imagistică (Foto)", type=['pdf', 'png', 'jpg', 'jpeg'], accept_multiple_files=True)
+        
+        if uploaded_files:
+            # Procesare automată la upload
+            raw_text = ""
+            images = []
+            for file in uploaded_files:
+                if file.type == "application/pdf":
+                    try:
+                        reader = PdfReader(file)
+                        for page in reader.pages:
+                            raw_text += page.extract_text() + "\n"
+                    except:
+                        st.error("Eroare la citirea PDF-ului.")
+                else:
+                    images.append(Image.open(file))
+            
+            st.session_state.patient_context = raw_text
+            st.session_state.images_context = images
+            if raw_text or images:
+                st.success(f"✅ Dosar încărcat: {len(images)} imagini, {len(raw_text)} caractere text.")
     else:
+        # Curățăm contextul dacă se iese din modul pacient
         st.session_state.patient_context = ""
         st.session_state.images_context = []
 
-    if st.session_state.messages:
-        st.download_button("💾 Export Discuție", generate_download_text(), "consult.txt")
+    st.markdown("---")
+    if st.button("🗑️ Șterge Conversația", type="primary"):
+        st.session_state.messages = []
+        st.rerun()
 
-# --- CHAT ---
-st.subheader("Discuție Clinică")
+# --- 7. INTERFAȚA DE CHAT ---
+st.subheader("💬 Discuție Medicală")
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        if message["role"] == "assistant":
-            st.markdown(format_links_new_tab(message["content"]), unsafe_allow_html=True)
+# Afișare istoric
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        if msg["role"] == "assistant":
+            st.markdown(format_links(msg["content"]), unsafe_allow_html=True)
         else:
-            st.markdown(message["content"])
+            st.markdown(msg["content"])
 
-if prompt := st.chat_input("Introdu datele clinice sau întrebarea..."):
+# --- 8. LOGICA DE PROCESARE (THE BRAIN) ---
+if prompt := st.chat_input("Întreabă despre un tratament, un diagnostic sau datele pacientului..."):
     
+    # Adăugăm mesajul utilizatorului în istoric
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
+        response_placeholder = st.empty()
         
-        web_context = ""
-        with st.spinner("Caut surse medicale (Tavily)..."):
-            raw_results = search_tavily(prompt[:300])
-            if raw_results:
-                web_context = f"REZULTATE WEB (Surse):\n{raw_results}"
-                st.caption("✅ Surse identificate.")
-            else:
-                st.caption("⚠️ Răspund din baza de date internă.")
+        # A. Căutare Web (Doar dacă butonul este activat)
+        web_context_str = ""
+        if use_web_search:
+            with st.spinner("🔍 Caut informații medicale actualizate..."):
+                search_res = search_tavily(prompt[:400]) # Căutăm doar primele 400 caractere
+                if search_res:
+                    web_context_str = f"CONTEXT WEB (Surse Externe):\n{search_res}\n"
+        
+        # B. Construire Context Pacient
+        patient_block = ""
+        if use_patient_mode:
+            patient_block = f"""
+            --- DATE PACIENT CURENT ---
+            Sex: {gender}, Vârstă: {age}, Greutate: {weight}kg.
+            REZUMAT DOSAR/ANALIZE: {st.session_state.patient_context[:5000]} 
+            (Notă: Dacă există imagini atașate, analizează-le vizual).
+            """
+        
+        # C. Construire Memorie (Istoric Conversație)
+        # Luăm ultimele 5 mesaje pentru context, excluzând ultimul care e promptul curent
+        history_str = ""
+        for m in st.session_state.messages[-6:-1]: 
+            role_label = "MEDIC" if m["role"] == "user" else "AI"
+            history_str += f"{role_label}: {m['content']}\n"
 
-        with st.spinner("Generez răspunsul..."):
-            try:
-                system_prompt = """
-                ROL: Medic Consultant Senior.
-                SARCINĂ: Răspunde colegial unui alt medic.
-                REGULI:
-                1. Bazează-te PRIORITAR pe REZULTATELE WEB de mai jos.
-                2. Citează sursele: [Nume](URL).
-                3. FĂRĂ sfaturi pentru pacienți.
-                """
-
-                context_block = ""
-                if use_patient_data:
-                    context_block = f"""
-                    PACIENT: {gender}, {age} ani, {weight}kg.
-                    DOSAR: {st.session_state.patient_context}
-                    """
-
-                final_prompt = f"{system_prompt}\n{web_context}\n{context_block}\nÎNTREBARE: {prompt}"
-
-                content_parts = [final_prompt]
-                if st.session_state.images_context and use_patient_data:
-                     # Încercăm să adăugăm imaginea, dacă modelul suportă
-                    try:
-                        content_parts.append(st.session_state.images_context[0])
-                    except:
-                        pass
-
-                response = model.generate_content(content_parts)
-                
-                final_html = format_links_new_tab(response.text)
-                st.markdown(final_html, unsafe_allow_html=True)
-                st.session_state.messages.append({"role": "assistant", "content": response.text})
-
-            except Exception as e:
-                st.error(f"Eroare: {e}")
+        # D. Promptul de Sistem (Instrucțiunile Supreme)
+        system_prompt = f"""
+        Ești un Consultant Medical Senior AI. Discuți cu un coleg 
