@@ -180,7 +180,7 @@ if final_prompt:
         # SEARCH
         web_context_str = ""
         if use_web_search:
-            with st.spinner("🔍 Caut surse 2024-2025..."):
+            with st.spinner("🔍 Caut surse 2024-2026..."):
                 res = search_tavily(final_prompt[:400])
                 if res: web_context_str = f"CONTEXT WEB (Conține linkuri reale):\n{res}\n"
         
@@ -200,7 +200,7 @@ if final_prompt:
         Ești un Asistent Medical Expert. DATA AZI: {current_date}.
         
         INSTRUCȚIUNI OBLIGATORII:
-        1. Caută date din 2024-2025. Ignoră datele vechi dacă există altele noi.
+        1. Caută date din 2024-2026. Ignoră datele vechi dacă există altele noi.
         2. Răspunde structurat, cu bullet points.
         
         3. SURSE ȘI BIBLIOGRAFIE (FOARTE IMPORTANT):
